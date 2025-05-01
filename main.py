@@ -6,6 +6,7 @@ from tkinter import messagebox
 from tkinter.ttk import *
 import xml.etree.ElementTree as ET
 import string
+import os
 
 
 
@@ -122,8 +123,8 @@ class Win(WinGUI):
 
     def menu_m9v8tcoh(self, parent):
         menu = Menu(parent, tearoff=False)
-        menu.add_command(label="一键获取全节点管理员权限", command=self.ctl.getAllComputerAdmin)
         menu.add_command(label="一键解锁全节点", command=self.ctl.unlockAllComputer)
+        menu.add_command(label="一键获取全节点管理员权限", command=self.ctl.getAllComputerAdmin)        
         menu.add_command(label="一键坚不可摧", command=self.ctl.makeMyComputerUnbreakable)
         return menu
 
@@ -188,6 +189,7 @@ class Controller:
         if hacknet_save is None:
             messagebox.showerror("错误", "存档格式不正确，找不到HacknetSave节点")
             logger("[存档加载]检测到坏档！问题：找不到HacknetSave节点")
+            self.xml_root = None # 清空xml内容
             return
             
         game_user = hacknet_save.get('Username')
@@ -251,7 +253,11 @@ class Controller:
             
     def openFile(self):
         file_types = [('存档文件', '*.xml')]
-        self.xml_file = filedialog.askopenfilename(title='打开存档', filetypes=file_types)
+        if os.name == 'nt':
+            from win32com.shell import shellcon, shell
+            default_path = shell.SHGetFolderPath(0, shellcon.CSIDL_PERSONAL, None, 0)+r"\My Games\Hacknet\Accounts"
+
+        self.xml_file = filedialog.askopenfilename(title='打开存档',initialdir=default_path, filetypes=file_types)
         if not self.xml_file:
             return
         
@@ -267,7 +273,7 @@ class Controller:
 
     def saveFile(self):
         if self.xml_root is None:
-            messagebox.showinfo(message="老弟，你没打开就保存啊？")
+            messagebox.showinfo(message="请先打开一个存档！")
             logger("[覆盖保存]未打开存档就保存")
             return
             
@@ -284,13 +290,13 @@ class Controller:
 
     def saveAnotherFile(self):
         if self.xml_root is None:
-            messagebox.showinfo(message="老弟，你没打开就保存啊？")
+            messagebox.showinfo(message="请先打开一个存档！")
             logger("[另存为]未打开存档就保存")
             return
             
         try:
             file_types = [('存档文件', '*.xml')]
-            r = filedialog.asksaveasfilename(title='保存存档到', filetypes=file_types)
+            r = filedialog.asksaveasfilename(title='保存存档到', defaultextension=".xml", filetypes=file_types)
             if r:
                 save_file(self.xml_root, r)
                 logger("[另存为]存档保存成功")
@@ -309,7 +315,7 @@ class Controller:
 
     def unlockAllComputer(self):
         if self.xml_root is None:
-            messagebox.showinfo(message="老弟，你存档呢？")
+            messagebox.showinfo(message="请先打开一个存档！")
             logger("[全节点解锁]未打开存档就使用功能")
             return
             
@@ -325,7 +331,7 @@ class Controller:
  
     def getAllComputerAdmin(self):
         if self.xml_root is None:
-            messagebox.showinfo(message="老弟，你存档呢？")
+            messagebox.showinfo(message="请先打开一个存档！")
             logger("[全管理员]未打开存档就使用功能")
             return
             
@@ -357,7 +363,7 @@ class Controller:
 
     def makeMyComputerUnbreakable(self):
         if self.xml_root is None:
-            messagebox.showinfo(message="老弟，你存档呢？")
+            messagebox.showinfo(message="请先打开一个存档！")
             logger("[无懈可击]未打开存档就使用功能")
             return
             
