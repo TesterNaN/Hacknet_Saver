@@ -309,7 +309,7 @@ class Controller:
         response = messagebox.askyesno("提示", "确定关闭软件？")
         if response:
             logger("[退出程序]用户离开")
-            exit()
+            os._exit(0)
         else:
             pass
 
