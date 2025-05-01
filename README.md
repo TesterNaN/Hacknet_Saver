@@ -1,4 +1,3 @@
-```markdown
 # Hacknet存档编辑器
 ![Python 3.7](https://img.shields.io/badge/Python-3.7-blue.svg)
 ![GPLv3 License](https://img.shields.io/badge/License-GPLv3-brightgreen.svg)
@@ -48,7 +47,6 @@
 ```bash
 git clone https://github.com/TesterNaN/Hacknet_Saver.git
 cd Hacknet_Saver
-```
 
 2. 运行程序：
 ```bash
