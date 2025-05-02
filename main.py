@@ -162,7 +162,7 @@ class Controller:
                 links_index = idx
                 break
 
-        # 如果找到 <links> 且后面不是 <portsOpen>
+        # 如果找到 <links> 且后面是 <portsOpen>
         if links_index is not None and links_index + 1 < len(children):
             next_sibling = children[links_index + 1]
             if next_sibling.tag == 'portsOpen':
@@ -170,7 +170,7 @@ class Controller:
                 firewall = ET.SubElement(parent_element, 'firewall', {
                     'additionalDelay': '0',
                     'complexity': '0',
-                    'solution': firewall_pass  # 可改为 random_string() 生成随机解
+                    'solution': firewall_pass 
                 })
                 # 插入到 <links> 之后
                 parent_element.insert(links_index + 1, firewall)
