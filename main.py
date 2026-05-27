@@ -1,5 +1,6 @@
 import random
 import re
+import struct
 from tkinter import *
 from tkinter import filedialog, messagebox
 from tkinter.ttk import *
@@ -9,7 +10,7 @@ import os
 
 
 #--------------变量控制区-----------------
-version = 1.02
+version = 1.03
 debug = False
 #-----------------------------------------
 
@@ -18,7 +19,7 @@ debug = False
 MULTIPLIER = 1822
 OFFSET_BASE = 32767
 EMPTY_PASSCODE = 5886
-MEMORY_PASSCODE = 23248  # 内存转储专用密码 "19474-217316293"
+MEMORY_PASSCODE = 23248
 
 def decrypt_num(num: int, passcode: int):
     off = OFFSET_BASE + passcode
@@ -154,6 +155,39 @@ def collect_dec_files_from_folder(folder_elem, current_path, ip, name, computer_
                 address = f"{ip}/{full_path}"
                 results.append((file_name, name, address, content, ip, computer_elem))
 
+# ==================== .NET Framework 4.0 哈希模拟 ====================
+def dotnet_fx40_string_hash(s: str) -> int:
+    encoded = s.encode('utf-16-le')
+    length = len(s)
+    ints = []
+    for i in range(0, len(encoded), 4):
+        chunk = encoded[i:i+4]
+        if len(chunk) < 4:
+            chunk = chunk + b'\x00' * (4 - len(chunk))
+        ints.append(struct.unpack('<I', chunk)[0])
+    def to_signed32(x):
+        return x if x < 0x80000000 else x - 0x100000000
+    num = 352654597
+    num2 = num
+    i = length
+    idx = 0
+    while i > 2:
+        v1 = ints[idx]
+        v2 = ints[idx + 1]
+        num = to_signed32((((num << 5) + num + (num >> 27)) & 0xFFFFFFFF) ^ v1)
+        num2 = to_signed32((((num2 << 5) + num2 + (num2 >> 27)) & 0xFFFFFFFF) ^ v2)
+        idx += 2
+        i -= 4
+    if i > 0:
+        v = ints[idx]
+        num = to_signed32((((num << 5) + num + (num >> 27)) & 0xFFFFFFFF) ^ v)
+    return to_signed32((num + num2 * 1566083941) & 0xFFFFFFFF)
+
+def get_passcode(password: str) -> int:
+    if password == "":
+        return EMPTY_PASSCODE
+    return dotnet_fx40_string_hash(password) & 0xFFFF
+
 # ==================== 原工具代码 ====================
 def logger(content):
     if debug:
@@ -244,6 +278,7 @@ class Win(WinGUI):
         menu = Menu(self, tearoff=False)
         menu.add_cascade(label="文件", menu=self.menu_m9v95o42(menu))
         menu.add_cascade(label="功能", menu=self.menu_m9v8tcoh(menu))
+        menu.add_cascade(label="特殊", menu=self.menu_special(menu))  # 新特殊菜单
         return menu
 
     def __event_bind(self):
@@ -253,11 +288,17 @@ class Win(WinGUI):
 
     def menu_m9v8tcoh(self, parent):
         menu = Menu(parent, tearoff=False)
+        menu.add_command(label="DEC文件查看器", command=self.ctl.showDECFiles)
+        menu.add_command(label="内存转储查看器", command=self.ctl.showMemoryDumps)
+        menu.add_command(label="DEC文件加解密器", command=self.ctl.showDECEncryptor)
+        return menu
+
+    def menu_special(self, parent):
+        menu = Menu(parent, tearoff=False)
         menu.add_command(label="一键解锁全节点", command=self.ctl.unlockAllComputer)
         menu.add_command(label="一键获取全节点管理员权限", command=self.ctl.getAllComputerAdmin)
         menu.add_command(label="一键坚不可摧", command=self.ctl.makeMyComputerUnbreakable)
-        menu.add_command(label="DEC文件查看器", command=self.ctl.showDECFiles)
-        menu.add_command(label="内存转储查看器", command=self.ctl.showMemoryDumps)
+        menu.add_command(label="一键获得所有可执行文件", command=self.ctl.getAllExeFiles)
         return menu
 
     def menu_m9v95o42(self, parent):
@@ -270,6 +311,98 @@ class Win(WinGUI):
 
     def __style_config(self):
         pass
+
+# ==================== 精确的随机数生成器 (MSRandom) ====================
+class SubtractiveRNG:
+    def __init__(self, seed):
+        self._inext = 0
+        self._inextp = 21
+        self._seedArray = [0] * 56
+        num2 = abs(seed) if seed != -2147483648 else 2147483647
+        num3 = 161803398 - num2
+        self._seedArray[55] = num3
+        num4 = 1
+        for i in range(1, 55):
+            idx = (21 * i) % 55
+            self._seedArray[idx] = num4
+            num4 = num3 - num4
+            if num4 < 0:
+                num4 += 2147483647
+            num3 = self._seedArray[idx]
+        for _ in range(4):
+            for k in range(1, 56):
+                idx = k + 30
+                if idx >= 55:
+                    idx -= 55
+                self._seedArray[k] -= self._seedArray[1 + idx]
+                if self._seedArray[k] < 0:
+                    self._seedArray[k] += 2147483647
+        self._inext = 0
+        self._inextp = 21
+
+    def InternalSample(self):
+        n1 = self._inext + 1
+        if n1 >= 56:
+            n1 = 1
+        n2 = self._inextp + 1
+        if n2 >= 56:
+            n2 = 1
+        val = self._seedArray[n1] - self._seedArray[n2]
+        if val == 2147483647:
+            val -= 1
+        if val < 0:
+            val += 2147483647
+        self._seedArray[n1] = val
+        self._inext = n1
+        self._inextp = n2
+        return val
+
+    def NextBytes(self, buf):
+        for i in range(len(buf)):
+            buf[i] = self.InternalSample() & 0xFF
+
+def gen_bin(rng, length=500):
+    buf = [0] * (length // 8)
+    rng.NextBytes(buf)
+    return ''.join(bin(b)[2:] for b in buf)
+
+def generate_all_exe_data():
+    rng = SubtractiveRNG(17021990)
+    exe_data = {}
+    for port in [22, 21, 25, 80, 3724, 1433, 104, 3659]:
+        exe_data[port] = gen_bin(rng)
+    for port in [1, 4, 8, 9, 10, 11, 12]:
+        exe_data[port] = gen_bin(rng)
+    for port in [14, 15, 16, 17]:
+        exe_data[port] = gen_bin(rng)
+    exe_data[13] = gen_bin(rng)
+    gen_bin(rng)
+    gen_bin(rng)
+    for port in [6881, 443, 31, 211, 32, 9418, 192, 33, 34, 35, 36, 37, 38, 39]:
+        exe_data[port] = gen_bin(rng)
+    gen_bin(rng)
+    for port in [554, 40, 41]:
+        exe_data[port] = gen_bin(rng)
+    return exe_data
+
+ALL_EXE_DATA = generate_all_exe_data()
+
+EXE_NAMES = {
+    22: "SSHcrack.exe", 21: "FTPBounce.exe", 25: "SMTPoverflow.exe",
+    80: "WebServerWorm.exe", 3724: "WoWHack.exe", 1433: "SQL_MemCorrupt.exe",
+    104: "KBT_PortTest.exe", 3659: "confloodEOS.exe",
+    1: "Tutorial.exe", 4: "SecurityTracer.exe", 8: "Notes.exe",
+    9: "Decypher.exe", 10: "DECHead.exe", 11: "Clock.exe",
+    12: "TraceKill.exe", 13: "eosDeviceScan.exe", 14: "themechanger.exe",
+    15: "hacknet.exe", 16: "HexClock.exe", 17: "Sequencer.exe",
+    6881: "TorrentStreamInjector.exe", 443: "SSLTrojan.exe",
+    31: "KaguyaTrial.exe", 211: "FTPSprint.exe", 32: "SignalScramble.exe",
+    9418: "GitTunnel.exe", 192: "PacificPortcrusher.exe",
+    33: "MemForensics.exe", 34: "MemDumpGenerator.exe",
+    35: "NetmapOrganizer.exe", 36: "ComShell.exe", 37: "DNotes.exe",
+    38: "ClockV2.exe", 39: "Tuneswap.exe", 554: "RTSPCrack.exe",
+    40: "ESequencer.exe", 41: "OpShell.exe"
+}
 
 class Controller:
     ui = None
@@ -358,10 +491,19 @@ class Controller:
             parts.append(str(num))
         return ' '.join(parts)
 
+    def encrypt_dec_file(self, content: str, header: str, ip: str, password: str = "") -> str:
+        pass_user = get_passcode(password) if password else EMPTY_PASSCODE
+        enc_header = self.encrypt_string(header, EMPTY_PASSCODE)
+        enc_ip = self.encrypt_string(ip, EMPTY_PASSCODE)
+        enc_encoded = self.encrypt_string("ENCODED", pass_user)
+        enc_suffix = self.encrypt_string(".txt", EMPTY_PASSCODE)
+        enc_content = self.encrypt_string(content, pass_user)
+        dec_line = f"#DEC_ENC::{enc_header}::{enc_ip}::{enc_encoded}::{enc_suffix}"
+        return dec_line + "\r\n" + enc_content
+
     def encrypt_memory_dump(self, computer) -> str:
         raw_xml = self.get_memory_xml(computer)
         compact = self.compact_memory_xml(raw_xml)
-        # 模拟游戏原生 bug：将每个汉字替换为 ?
         compact = re.sub(r'[\u4e00-\u9fff]', '?', compact)
         header_enc = self.encrypt_string("MEMORY DUMP", EMPTY_PASSCODE)
         ip_enc = self.encrypt_string("------", EMPTY_PASSCODE)
@@ -405,6 +547,36 @@ class Controller:
             return content
         except:
             return None
+
+    def decrypt_all_layers_with_password(self, data: str, password: str):
+        current_data = data
+        first_header = first_ip = None
+        final_suffix = '.txt'
+        passcodes = []
+        passcode = get_passcode(password) if password else EMPTY_PASSCODE
+        while True:
+            lines = [line for line in re.split(r'\r?\n', current_data) if line.strip() != '']
+            if len(lines) < 2:
+                break
+            head_line = lines[0]
+            body_line = lines[1]
+            parts = head_line.split('::')
+            if len(parts) < 4:
+                break
+            if decrypt_block(parts[3], passcode) != "ENCODED":
+                raise ValueError("密码错误")
+            header, ip, suffix, content = decrypt_layer(current_data, passcode)
+            if first_header is None:
+                first_header = header
+                first_ip = ip
+            final_suffix = suffix
+            passcodes.append(passcode)
+            if '#DEC_ENC' in content:
+                current_data = content
+            else:
+                final_content = content
+                break
+        return first_header, first_ip, final_suffix, final_content, passcodes
 
     # ---------- 存档显示 ----------
     def showComputer(self):
@@ -481,7 +653,7 @@ class Controller:
         if messagebox.askyesno("提示", "确定关闭软件？"):
             os._exit(0)
 
-    # ---------- 功能 ----------
+    # ---------- 特殊功能 ----------
     def unlockAllComputer(self):
         if self.xml_root is None: return messagebox.showinfo(message="请先打开一个存档！")
         self.xml_root.find('NetworkMap').find("visible").text = ' '.join(str(i) for i in range(self.computer_num))
@@ -514,9 +686,44 @@ class Controller:
         else:
             firewall.set('solution', ''.join(random.choices(string.ascii_letters+string.digits, k=12)))
         ports = player.find('portsOpen')
-        if ports is not None: ports.text = "80 25 21 22 1433 3659 104"
+        if ports is not None: ports.text = "80 25 21 22 1433 3659 104 443 192 6881 32 9418 3724 211 554"
         self.showComputer()
         messagebox.showinfo(message="你的电脑坚不可摧！[滑稽]")
+
+    def getAllExeFiles(self):
+        if self.xml_root is None:
+            messagebox.showinfo(message="请先打开一个存档！")
+            return
+        player = self.get_player_computer()
+        if player is None:
+            messagebox.showerror("错误", "未找到玩家计算机")
+            return
+        filesystem = player.find('filesystem')
+        if filesystem is None:
+            messagebox.showerror("错误", "玩家计算机没有文件系统")
+            return
+        root = filesystem.find("folder[@name='/']")
+        if root is None:
+            messagebox.showerror("错误", "玩家计算机没有根文件夹")
+            return
+        bin_folder = root.find("folder[@name='bin']")
+        if bin_folder is None:
+            bin_folder = ET.SubElement(root, 'folder', {'name': 'bin'})
+        added_count = 0
+        skipped_count = 0
+        for port, name in EXE_NAMES.items():
+            existing = bin_folder.find(f"file[@name='{name}']")
+            if existing is not None:
+                skipped_count += 1
+                continue
+            data = ALL_EXE_DATA.get(port)
+            if data is None:
+                continue
+            file_elem = ET.SubElement(bin_folder, 'file', {'name': name})
+            file_elem.text = data
+            file_elem.tail = '\n'
+            added_count += 1
+        messagebox.showinfo("完成", f"已添加 {added_count} 个文件，跳过已存在的 {skipped_count} 个。\n请手动保存存档以生效。")
 
     # ---------- 右键菜单与编辑 ----------
     def show_context_menu(self, event):
@@ -566,7 +773,7 @@ class Controller:
 
         Button(window, text="确认", command=apply_edit).grid(row=len(tree["columns"]), column=0, columnspan=2)
 
-    # ==================== 文件浏览器（含 Memory 节点） ====================
+    # ==================== 文件浏览器 ====================
     def open_file_browser(self, event):
         tree = self.ui.tk_table_m9v8rfji
         item = tree.identify_row(event.y)
@@ -642,11 +849,57 @@ class Controller:
 
             if fname.lower().endswith('.dec') and content.startswith('#DEC_ENC::'):
                 try:
-                    _, _, _, final, _ = decrypt_all_layers(content)
-                    content = final
+                    _, _, _, final, _ = self.decrypt_all_layers_with_password(content, "")
+                    final = self.decode_hacknet_markers(final)
+                    text.config(state=NORMAL)
+                    text.delete(1.0, END)
+                    text.insert(1.0, final)
+                    text.config(state=DISABLED)
+                    return
                 except:
                     pass
-            elif fname.lower().endswith('.mem'):
+                # 弹窗
+                def show_decrypted(result_text):
+                    text.config(state=NORMAL)
+                    text.delete(1.0, END)
+                    text.insert(1.0, result_text)
+                    text.config(state=DISABLED)
+
+                dlg = Toplevel(win)
+                dlg.title(f"解密 - {fname}")
+                dlg.geometry("300x120")
+                dlg.resizable(False, False)
+                Label(dlg, text="输入密码（留空则使用默认空密码）：").pack(pady=5)
+                pwd_entry = Entry(dlg, width=30)
+                pwd_entry.pack(pady=5)
+                pwd_entry.focus_set()
+
+                def try_pwd():
+                    password = pwd_entry.get()
+                    dlg.destroy()
+                    try:
+                        _, _, _, final, _ = self.decrypt_all_layers_with_password(content, password)
+                        final = self.decode_hacknet_markers(final)
+                        show_decrypted(final)
+                    except Exception as e:
+                        messagebox.showerror("解密失败", str(e))
+
+                def brute():
+                    dlg.destroy()
+                    try:
+                        _, _, _, final, _ = decrypt_all_layers(content)
+                        final = self.decode_hacknet_markers(final)
+                        show_decrypted(final)
+                    except Exception as e:
+                        messagebox.showerror("解密失败", str(e))
+
+                btn_frame = Frame(dlg)
+                btn_frame.pack(pady=5)
+                Button(btn_frame, text="确定", command=try_pwd, width=10).pack(side=LEFT, padx=5)
+                Button(btn_frame, text="暴力破解", command=brute, width=10).pack(side=LEFT, padx=5)
+                return
+
+            if fname.lower().endswith('.mem'):
                 if content.startswith('MEMORY_DUMP : FORMAT v1.22 ----------'):
                     mem_content = self.decrypt_memory_dump(content)
                     if mem_content is not None:
@@ -671,7 +924,6 @@ class Controller:
                             pass
 
             content = self.decode_hacknet_markers(content)
-
             text.config(state=NORMAL)
             text.delete(1.0, END)
             text.insert(1.0, content)
@@ -685,9 +937,7 @@ class Controller:
             current_path = '/'
         else:
             current_path = (parent_path.rstrip('/') + '/' + folder_name) if parent_path != '/' else '/' + folder_name
-
         node = tree.insert(parent_node, 'end', text=folder_name, values=(current_path,))
-
         has_children = False
         for child in folder_elem:
             if child.tag == 'folder':
@@ -698,7 +948,6 @@ class Controller:
                 fpath = current_path.rstrip('/') + '/' + fname
                 tree.insert(node, 'end', text=fname, values=(fpath,))
                 has_children = True
-
         if not has_children:
             tree.insert(node, 'end', text='-空白-', values=('',))
 
@@ -731,29 +980,24 @@ class Controller:
         if self.xml_root is None:
             messagebox.showinfo(message="请先打开一个存档！")
             return
-
         dumps = []
         for computer in self.xml_root.findall('.//computer'):
             if computer.find('Memory') is not None:
                 ip = computer.get('ip')
                 name = computer.get('name')
                 dumps.append((ip, name, computer))
-
         if not dumps:
             messagebox.showinfo(message="存档中没有包含内存转储的节点！")
             return
-
         window = Toplevel(self.ui)
         window.title("内存转储查看器")
         window.geometry("600x400")
-
         columns = ("IP", "节点名称")
         tree = Treeview(window, show="headings", columns=columns)
         for col in columns:
             tree.heading(col, text=col)
             tree.column(col, anchor='center', width=250)
         tree.pack(fill=BOTH, expand=True, padx=10, pady=10)
-
         for ip, name, _ in dumps:
             tree.insert('', END, values=(ip, name))
 
@@ -765,22 +1009,18 @@ class Controller:
             comp = next((c for c in dumps if c[0] == ip and c[1] == name), None)
             if comp is None: return
             computer = comp[2]
-
             raw_xml = self.get_memory_xml(computer)
             compact = self.compact_memory_xml(raw_xml)
             mem_content = self.decode_hacknet_markers(compact)
-
             result_win = Toplevel(self.ui)
             result_win.title(f"内存转储 - {name} ({ip})")
             result_win.geometry("800x600")
-
             menubar = Menu(result_win)
             file_menu = Menu(menubar, tearoff=False)
             file_menu.add_command(label="保存到玩家转储目录", command=lambda: self._save_to_memdump(computer, name))
             file_menu.add_command(label="保存到本地", command=lambda: self._save_memory_local(name, mem_content))
             menubar.add_cascade(label="文件", menu=file_menu)
             result_win.config(menu=menubar)
-
             text = Text(result_win, wrap=WORD)
             text.insert(1.0, mem_content)
             text.config(state=DISABLED)
@@ -801,11 +1041,9 @@ class Controller:
             messagebox.showerror("错误", "未找到玩家计算机")
             return
         fs = player.find('filesystem')
-        if fs is None:
-            return
+        if fs is None: return
         root = fs.find("folder[@name='/']")
-        if root is None:
-            return
+        if root is None: return
         home = root.find("folder[@name='home']")
         if home is None:
             home = ET.SubElement(root, 'folder', {'name': 'home'})
@@ -830,7 +1068,7 @@ class Controller:
                 f.write(content)
             messagebox.showinfo("成功", f"内存转储已保存到 {path}")
 
-    # ==================== DEC 文件查看器（原功能） ====================
+    # ==================== DEC 文件查看器 ====================
     def showDECFiles(self):
         if self.xml_root is None:
             messagebox.showinfo(message="请先打开一个存档！")
@@ -858,6 +1096,7 @@ class Controller:
         tree.pack(fill=BOTH, expand=True, padx=10, pady=10)
         for fname, hostname, addr, _, _, _ in dec_files:
             tree.insert('', END, values=(fname, hostname, addr))
+
         def on_dbl_click(event):
             item = tree.selection()
             if not item: return
@@ -865,28 +1104,242 @@ class Controller:
             fname, hostname, addr = vals[0], vals[1], vals[2]
             content = next((e[3] for e in dec_files if e[0]==fname and e[1]==hostname and e[2]==addr), None)
             if not content: return
+
+            def show_result(hdr, ip, suffix, final, passcodes):
+                base = os.path.splitext(fname)[0]
+                final_name = base + suffix
+                result_win = Toplevel(self.ui)
+                result_win.title(f"解密结果 - {fname}")
+                result_win.geometry("800x600")
+                menubar = Menu(result_win)
+                file_menu = Menu(menubar, tearoff=False)
+                file_menu.add_command(label="保存到玩家/home目录", command=lambda: self.save_to_home(final_name, final))
+                file_menu.add_command(label="保存到本地", command=lambda: self.save_to_local(final_name, final))
+                menubar.add_cascade(label="文件", menu=file_menu)
+                result_win.config(menu=menubar)
+                final = self.decode_hacknet_markers(final)
+                text = Text(result_win, wrap=WORD)
+                text.insert(1.0, f"# 元数据（DECHead）_\nHeader: {hdr}\nIP: {ip}\nName: {final_name}\nPasscode: {passcodes[0]}\n# 元数据结束\n\n{final}")
+                text.config(state=DISABLED)
+                text.pack(fill=BOTH, expand=True, padx=10, pady=10)
+
+            # 尝试空密码
             try:
-                hdr, ip, suffix, final, passcodes = decrypt_all_layers(content)
+                hdr, ip, suffix, final, passcodes = self.decrypt_all_layers_with_password(content, "")
+                show_result(hdr, ip, suffix, final, passcodes)
+                return
+            except:
+                pass
+
+            dlg = Toplevel(self.ui)
+            dlg.title(f"解密 - {fname}")
+            dlg.geometry("300x120")
+            dlg.resizable(False, False)
+            Label(dlg, text="输入密码（留空则使用默认空密码）：").pack(pady=5)
+            pwd_entry = Entry(dlg, width=30)
+            pwd_entry.pack(pady=5)
+            pwd_entry.focus_set()
+
+            def try_pwd():
+                password = pwd_entry.get()
+                dlg.destroy()
+                try:
+                    hdr, ip, suffix, final, passcodes = self.decrypt_all_layers_with_password(content, password)
+                    show_result(hdr, ip, suffix, final, passcodes)
+                except Exception as e:
+                    messagebox.showerror("解密失败", str(e))
+
+            def brute():
+                dlg.destroy()
+                try:
+                    hdr, ip, suffix, final, passcodes = decrypt_all_layers(content)
+                    show_result(hdr, ip, suffix, final, passcodes)
+                except Exception as e:
+                    messagebox.showerror("解密失败", str(e))
+
+            btn_frame = Frame(dlg)
+            btn_frame.pack(pady=5)
+            Button(btn_frame, text="确定", command=try_pwd, width=10).pack(side=LEFT, padx=5)
+            Button(btn_frame, text="暴力破解", command=brute, width=10).pack(side=LEFT, padx=5)
+
+        tree.bind('<Double-1>', on_dbl_click)
+
+    # ==================== DEC 文件加解密器（修正底部标签） ====================
+    def showDECEncryptor(self):
+        win = Toplevel(self.ui)
+        win.title("DEC 文件加解密器")
+        win.geometry("850x650")
+        win.resizable(True, True)
+
+        # 菜单
+        menubar = Menu(win)
+        file_menu = Menu(menubar, tearoff=False)
+
+        def open_plain_file():
+            path = filedialog.askopenfilename(title="打开明文文件", filetypes=[("文本文件", "*.txt"), ("所有文件", "*.*")])
+            if not path:
+                return
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                plain_text.delete("1.0", END)
+                plain_text.insert("1.0", content)
+            except Exception as e:
+                messagebox.showerror("打开失败", str(e))
+
+        def open_cipher_file():
+            path = filedialog.askopenfilename(title="打开密文文件", filetypes=[("DEC 文件", "*.dec"), ("所有文件", "*.*")])
+            if not path:
+                return
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                cipher_text.delete("1.0", END)
+                cipher_text.insert("1.0", content)
+            except Exception as e:
+                messagebox.showerror("打开失败", str(e))
+
+        def save_plain_file():
+            content = plain_text.get("1.0", END).strip()
+            if not content:
+                messagebox.showwarning("无内容", "明文文本框为空，无法保存。")
+                return
+            path = filedialog.asksaveasfilename(title="保存明文文件", defaultextension=".txt",
+                                                filetypes=[("文本文件", "*.txt"), ("所有文件", "*.*")])
+            if not path:
+                return
+            try:
+                with open(path, 'w', encoding='utf-8') as f:
+                    f.write(content)
+                messagebox.showinfo("保存成功", f"文件已保存到 {path}")
+            except Exception as e:
+                messagebox.showerror("保存失败", str(e))
+
+        def save_cipher_file():
+            content = cipher_text.get("1.0", END).strip()
+            if not content:
+                messagebox.showwarning("无内容", "密文文本框为空，无法保存。")
+                return
+            path = filedialog.asksaveasfilename(title="保存密文文件", defaultextension=".dec",
+                                                filetypes=[("DEC 文件", "*.dec"), ("所有文件", "*.*")])
+            if not path:
+                return
+            try:
+                with open(path, 'w', encoding='utf-8') as f:
+                    f.write(content)
+                messagebox.showinfo("保存成功", f"文件已保存到 {path}")
+            except Exception as e:
+                messagebox.showerror("保存失败", str(e))
+
+        file_menu.add_command(label="打开 txt 明文", command=open_plain_file)
+        file_menu.add_command(label="打开 dec 密文", command=open_cipher_file)
+        file_menu.add_separator()
+        file_menu.add_command(label="保存明文 txt", command=save_plain_file)
+        file_menu.add_command(label="保存密文 dec", command=save_cipher_file)
+        menubar.add_cascade(label="文件", menu=file_menu)
+        win.config(menu=menubar)
+
+        # 整体布局：三列 + 底部一行
+        win.grid_columnconfigure(0, weight=1, uniform="col")
+        win.grid_columnconfigure(1, weight=0)
+        win.grid_columnconfigure(2, weight=1, uniform="col")
+        win.grid_rowconfigure(0, weight=1)  # 文本框行伸缩
+        win.grid_rowconfigure(1, weight=0)  # 底部行固定高度
+
+        # 左侧明文区
+        left_frame = Frame(win)
+        left_frame.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
+        left_frame.grid_rowconfigure(1, weight=1)
+        left_frame.grid_columnconfigure(0, weight=1)
+        Label(left_frame, text="明文内容").grid(row=0, column=0, sticky="w")
+        plain_text = Text(left_frame, wrap=WORD, width=40, height=20)
+        plain_text.grid(row=1, column=0, sticky="nsew")
+
+        # 中间按钮（垂直居中）
+        mid_frame = Frame(win, width=80)
+        mid_frame.grid(row=0, column=1, sticky="ns", padx=10, pady=5)
+        mid_frame.grid_propagate(False)
+        btn_container = Frame(mid_frame)
+        btn_container.place(relx=0.5, rely=0.5, anchor="center")
+
+        def do_encrypt():
+            plain = plain_text.get("1.0", END).strip()
+            header = title_var.get().strip() or "Title"
+            ip = ip_var.get().strip() or "127.0.0.1"
+            password = pwd_var.get()
+            try:
+                cipher = self.encrypt_dec_file(plain, header, ip, password)
+                cipher_text.delete("1.0", END)
+                cipher_text.insert("1.0", cipher)
+            except Exception as e:
+                messagebox.showerror("加密失败", str(e))
+
+        def do_decrypt():
+            cipher = cipher_text.get("1.0", END).strip()
+            if not cipher.startswith("#DEC_ENC::"):
+                messagebox.showerror("格式错误", "密文必须以 #DEC_ENC:: 开头")
+                return
+            lines = cipher.replace('\r\n', '\n').split('\n')
+            non_empty = [l for l in lines if l.strip() != '']
+            if len(non_empty) < 2:
+                messagebox.showerror("格式错误", "密文必须至少包含头部和内容两行")
+                return
+            header_fields = non_empty[0].split("::")
+            if len(header_fields) < 4:
+                messagebox.showerror("格式错误", "密文头部字段不足")
+                return
+
+            password = pwd_var.get()
+            passcode = get_passcode(password) if password else EMPTY_PASSCODE
+            try:
+                hdr, ip, suffix, content = decrypt_layer(cipher, passcode)
+                # 回填标题和 IP
+                title_var.set(hdr)
+                ip_var.set(ip)
+                plain_text.delete("1.0", END)
+                plain_text.insert("1.0", content)
             except Exception as e:
                 messagebox.showerror("解密失败", str(e))
-                return
-            base = os.path.splitext(fname)[0]
-            final_name = base + suffix
-            result_win = Toplevel(self.ui)
-            result_win.title(f"解密结果 - {fname}")
-            result_win.geometry("800x600")
-            menubar = Menu(result_win)
-            file_menu = Menu(menubar, tearoff=False)
-            file_menu.add_command(label="保存到玩家/home目录", command=lambda: self.save_to_home(final_name, final))
-            file_menu.add_command(label="保存到本地", command=lambda: self.save_to_local(final_name, final))
-            menubar.add_cascade(label="文件", menu=file_menu)
-            result_win.config(menu=menubar)
-            final = self.decode_hacknet_markers(final)
-            text = Text(result_win, wrap=WORD)
-            text.insert(1.0, f"# 元数据（DECHead）_\nHeader: {hdr}\nIP: {ip}\nName: {final_name}\nPasscode: {passcodes[0]}\n# 元数据结束\n\n{final}")
-            text.config(state=DISABLED)
-            text.pack(fill=BOTH, expand=True, padx=10, pady=10)
-        tree.bind('<Double-1>', on_dbl_click)
+
+        Button(btn_container, text="加密 →", command=do_encrypt, width=10).pack(pady=3)
+        Button(btn_container, text="← 解密", command=do_decrypt, width=10).pack(pady=3)
+
+        # 右侧密文区
+        right_frame = Frame(win)
+        right_frame.grid(row=0, column=2, sticky="nsew", padx=5, pady=5)
+        right_frame.grid_rowconfigure(1, weight=1)
+        right_frame.grid_columnconfigure(0, weight=1)
+        Label(right_frame, text="密文内容").grid(row=0, column=0, sticky="w")
+        cipher_text = Text(right_frame, wrap=WORD, width=40, height=20)
+        cipher_text.grid(row=1, column=0, sticky="nsew")
+
+        # ---------- 底部一行：标题、IP、密码（三个独立子 Frame） ----------
+        bottom_frame = Frame(win)
+        bottom_frame.grid(row=1, column=0, columnspan=3, sticky="ew", padx=10, pady=5)
+        bottom_frame.grid_columnconfigure(0, weight=1)
+        bottom_frame.grid_columnconfigure(1, weight=1)
+        bottom_frame.grid_columnconfigure(2, weight=1)
+
+        # 标题
+        title_frame = Frame(bottom_frame)
+        title_frame.grid(row=0, column=0, sticky="ew", padx=5)
+        Label(title_frame, text="标题:").pack(side=LEFT)
+        title_var = StringVar(value="Title")
+        Entry(title_frame, textvariable=title_var).pack(side=LEFT, expand=True, fill=X)
+
+        # IP
+        ip_frame = Frame(bottom_frame)
+        ip_frame.grid(row=0, column=1, sticky="ew", padx=5)
+        Label(ip_frame, text="IP:").pack(side=LEFT)
+        ip_var = StringVar(value="127.0.0.1")
+        Entry(ip_frame, textvariable=ip_var).pack(side=LEFT, expand=True, fill=X)
+
+        # 密码
+        pwd_frame = Frame(bottom_frame)
+        pwd_frame.grid(row=0, column=2, sticky="ew", padx=5)
+        Label(pwd_frame, text="密码:").pack(side=LEFT)
+        pwd_var = StringVar()
+        Entry(pwd_frame, textvariable=pwd_var).pack(side=LEFT, expand=True, fill=X)
 
     def save_to_home(self, filename, content):
         player = self.get_player_computer()
