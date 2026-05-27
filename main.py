@@ -504,7 +504,6 @@ class Controller:
     def encrypt_memory_dump(self, computer) -> str:
         raw_xml = self.get_memory_xml(computer)
         compact = self.compact_memory_xml(raw_xml)
-        compact = re.sub(r'[\u4e00-\u9fff]', '?', compact)
         header_enc = self.encrypt_string("MEMORY DUMP", EMPTY_PASSCODE)
         ip_enc = self.encrypt_string("------", EMPTY_PASSCODE)
         encoded_enc = self.encrypt_string("ENCODED", MEMORY_PASSCODE)
@@ -1501,18 +1500,30 @@ class Controller:
         home = root.find("folder[@name='home']")
         if home is None:
             home = ET.SubElement(root, 'folder', {'name': 'home'})
+            home.tail = '\n'
         memdumps = home.find("folder[@name='MemDumps']")
         if memdumps is None:
             memdumps = ET.SubElement(home, 'folder', {'name': 'MemDumps'})
-        filename = computer.get('name').replace(' ', '_').lower() + "_dump.mem"
+            memdumps.tail = '\n'
+            # 关键修复：新建文件夹后立即对 home 排序，确保文件夹在文件前面
+            self._sort_folder_children(home)
+        
+        # 文件名处理（中文替换为 ?）
+        raw_name = computer.get('name')
+        safe_name = re.sub(r'[\u4e00-\u9fff]', '?', raw_name)
+        filename = safe_name.replace(' ', '_').lower() + "_dump.mem"
+        
         existing = memdumps.find(f"file[@name='{filename}']")
         if existing is not None:
             if not messagebox.askyesno("文件已存在", f"文件 {filename} 已存在于 /home/MemDumps，是否覆盖？"):
                 return
             memdumps.remove(existing)
+        
         file_elem = ET.SubElement(memdumps, 'file', {'name': filename})
         file_elem.text = mem_content
         file_elem.tail = '\n'
+        self._sort_folder_children(memdumps)
+        
         messagebox.showinfo("成功", f"内存转储已保存到玩家 /home/MemDumps/{filename}。\n请手动“覆盖保存”以写入存档。")
 
     def _save_memory_local(self, name, content):
