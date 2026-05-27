@@ -2,7 +2,7 @@ import random
 import re
 import struct
 from tkinter import *
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, simpledialog
 from tkinter.ttk import *
 import xml.etree.ElementTree as ET
 import string
@@ -10,7 +10,7 @@ import os
 
 
 #--------------变量控制区-----------------
-version = 1.03
+version = 1.04
 debug = False
 #-----------------------------------------
 
@@ -278,7 +278,7 @@ class Win(WinGUI):
         menu = Menu(self, tearoff=False)
         menu.add_cascade(label="文件", menu=self.menu_m9v95o42(menu))
         menu.add_cascade(label="功能", menu=self.menu_m9v8tcoh(menu))
-        menu.add_cascade(label="特殊", menu=self.menu_special(menu))  # 新特殊菜单
+        menu.add_cascade(label="特殊", menu=self.menu_special(menu))
         return menu
 
     def __event_bind(self):
@@ -411,7 +411,7 @@ class Controller:
     computer_unlock_list = None
 
     def __init__(self):
-        pass
+        self.clipboard = None
 
     def init(self, ui):
         self.ui = ui
@@ -773,7 +773,29 @@ class Controller:
 
         Button(window, text="确认", command=apply_edit).grid(row=len(tree["columns"]), column=0, columnspan=2)
 
-    # ==================== 文件浏览器 ====================
+    # ==================== 文件系统排序辅助 ====================
+    def _sort_folder_children(self, folder_elem):
+        """确保文件夹内子元素顺序：先 folder 后 file，并设置 tail"""
+        children = list(folder_elem)
+        folders = [c for c in children if c.tag == 'folder']
+        files = [c for c in children if c.tag == 'file']
+        for c in children:
+            folder_elem.remove(c)
+        for f in folders:
+            folder_elem.append(f)
+            f.tail = '\n'
+        for f in files:
+            folder_elem.append(f)
+            f.tail = '\n'
+
+    def _sort_filesystem(self, fs_root):
+        """递归排序整个文件系统"""
+        self._sort_folder_children(fs_root)
+        for child in fs_root:
+            if child.tag == 'folder':
+                self._sort_filesystem(child)
+
+    # ==================== 增强版文件浏览器 ====================
     def open_file_browser(self, event):
         tree = self.ui.tk_table_m9v8rfji
         item = tree.identify_row(event.y)
@@ -784,9 +806,72 @@ class Controller:
         computer = self.get_computer_by_ip(ip)
         if computer is None: return
 
+        original_computer_elem = self._deep_copy_element(computer)
+        temp_computer_elem = self._deep_copy_element(computer)
+
+        current_editing_path = None
+
+        def check_modified():
+            return ET.tostring(temp_computer_elem, encoding='unicode') != ET.tostring(original_computer_elem, encoding='unicode')
+
+        def update_save_menu():
+            if check_modified():
+                file_menu.entryconfig("保存修改", state="normal")
+            else:
+                file_menu.entryconfig("保存修改", state="disabled")
+
+        def save_modifications():
+            nonlocal original_computer_elem, temp_computer_elem
+            original_comp = self.get_computer_by_ip(ip)
+            if original_comp is None: return
+            # 排序临时文件系统
+            temp_fs_root = temp_computer_elem.find('filesystem/folder[@name="/"]')
+            if temp_fs_root is not None:
+                self._sort_filesystem(temp_fs_root)
+            orig_fs = original_comp.find('filesystem')
+            temp_fs = temp_computer_elem.find('filesystem')
+            if orig_fs is not None and temp_fs is not None:
+                parent = original_comp
+                idx = list(parent).index(orig_fs)
+                parent.remove(orig_fs)
+                parent.insert(idx, temp_fs)
+            orig_mem = original_comp.find('Memory')
+            temp_mem = temp_computer_elem.find('Memory')
+            if temp_mem is not None:
+                if orig_mem is not None:
+                    parent = original_comp
+                    idx = list(parent).index(orig_mem)
+                    parent.remove(orig_mem)
+                    parent.insert(idx, temp_mem)
+                else:
+                    original_comp.append(temp_mem)
+            elif orig_mem is not None:
+                original_comp.remove(orig_mem)
+            original_computer_elem = self._deep_copy_element(original_comp)
+            temp_computer_elem = self._deep_copy_element(original_comp)
+            update_save_menu()
+            self.showComputer()
+            rebuild_tree()
+
         win = Toplevel(self.ui)
         win.title(f"文件浏览 - {name} ({ip})")
         win.geometry("900x600")
+
+        menubar = Menu(win)
+        file_menu = Menu(menubar, tearoff=False)
+        file_menu.add_command(label="保存修改", command=save_modifications, state="disabled")
+        file_menu.add_separator()
+        file_menu.add_command(label="关闭窗口", command=win.destroy)
+        menubar.add_cascade(label="文件", menu=file_menu)
+        win.config(menu=menubar)
+
+        address_frame = Frame(win)
+        address_frame.pack(fill=X, padx=5, pady=2)
+        Label(address_frame, text="路径:").pack(side=LEFT)
+        address_var = StringVar()
+        address_entry = Entry(address_frame, textvariable=address_var)
+        address_entry.pack(side=LEFT, fill=X, expand=True)
+        Button(address_frame, text="跳转", command=lambda: navigate(address_var.get())).pack(side=LEFT, padx=5)
 
         paned = PanedWindow(win, orient=HORIZONTAL)
         paned.pack(fill=BOTH, expand=True)
@@ -807,112 +892,153 @@ class Controller:
         sbr.pack(side=RIGHT, fill=Y)
         text.config(yscrollcommand=sbr.set)
 
-        filesystem = computer.find('filesystem')
-        if filesystem is not None:
-            root_folder = filesystem.find("folder[@name='/']")
-            if root_folder is not None:
-                self._build_dir_tree(dir_tree, '', '/', root_folder)
-                root_children = dir_tree.get_children('')
-                if root_children:
-                    dir_tree.item(root_children[0], open=True)
+        def on_edit(event):
+            if current_editing_path is None:
+                return
+            elem = self._find_fs_element_by_path(temp_computer_elem, current_editing_path)
+            if elem is not None and elem.tag == 'file':
+                new_content = text.get("1.0", END).rstrip('\n')
+                elem.text = '\n' + new_content if new_content else None
+                update_save_menu()
+        text.bind("<KeyRelease>", on_edit)
 
-        mem_elem = computer.find('Memory')
-        if mem_elem is not None:
-            dir_tree.insert('', 'end', text='Memory', values=('__memory__',))
+        expanded_paths = set()
+        def save_expanded():
+            expanded_paths.clear()
+            def collect_open(item):
+                if dir_tree.item(item, 'open'):
+                    expanded_paths.add(dir_tree.item(item, 'values')[0])
+                for child in dir_tree.get_children(item):
+                    collect_open(child)
+            for root_child in dir_tree.get_children(''):
+                collect_open(root_child)
+
+        def restore_expanded():
+            def expand_children(parent_item):
+                for child in dir_tree.get_children(parent_item):
+                    path = dir_tree.item(child, 'values')[0]
+                    if path in expanded_paths:
+                        dir_tree.item(child, open=True)
+                    expand_children(child)
+            for root_child in dir_tree.get_children(''):
+                if dir_tree.item(root_child, 'values')[0] in expanded_paths:
+                    dir_tree.item(root_child, open=True)
+                expand_children(root_child)
+
+        def rebuild_tree():
+            save_expanded()
+            for child in dir_tree.get_children():
+                dir_tree.delete(child)
+            filesystem = temp_computer_elem.find('filesystem')
+            if filesystem is not None:
+                root_folder = filesystem.find("folder[@name='/']")
+                if root_folder is not None:
+                    self._build_dir_tree_with_editing(dir_tree, '', '/', root_folder)
+            mem_elem = temp_computer_elem.find('Memory')
+            if mem_elem is not None:
+                dir_tree.insert('', 'end', text='Memory', values=('__memory__',))
+            restore_expanded()
+
+        def get_current_dir():
+            sel = dir_tree.selection()
+            if sel:
+                path = dir_tree.item(sel[0], 'values')[0]
+                if path == '__memory__':
+                    return '/'
+                if path.endswith('/'):
+                    return path
+                return self._get_parent_path(path)
+            return '/'
+
+        def update_address():
+            address_var.set(get_current_dir())
+
+        def navigate(target):
+            target = target.strip()
+            if not target.endswith('/'):
+                target += '/'
+            folder = self._find_folder_by_path(temp_computer_elem, target)
+            if folder is None:
+                update_address()
+                return
+
+            found_item = None
+            def select_item(parent, path_to_find):
+                nonlocal found_item
+                for child in dir_tree.get_children(parent):
+                    if dir_tree.item(child, 'values')[0] == path_to_find:
+                        found_item = child
+                        dir_tree.selection_set(child)
+                        dir_tree.see(child)
+                        return True
+                    if select_item(child, path_to_find):
+                        return True
+                return False
+
+            # 先尝试直接选中
+            if not select_item('', target):
+                # 失败则逐层展开所有父文件夹
+                parts = target.strip('/').split('/')
+                current_parent = ''
+                for i, part in enumerate(parts):
+                    cur_path = '/' + '/'.join(parts[:i+1]) + '/'
+                    found = False
+                    for child in dir_tree.get_children(current_parent):
+                        if dir_tree.item(child, 'values')[0] == cur_path:
+                            dir_tree.item(child, open=True)
+                            current_parent = child
+                            found = True
+                            break
+                    if not found:
+                        update_address()
+                        return
+                # 展开后重试选中
+                select_item('', target)
+
+            # 选中后展开目标文件夹
+            if found_item:
+                dir_tree.item(found_item, open=True)
+
+            update_address()
 
         def on_dir_select(event):
+            nonlocal current_editing_path
             sel = dir_tree.selection()
             if not sel: return
             item_data = dir_tree.item(sel[0])
             path = item_data['values'][0] if item_data['values'] else None
-            if path is None:
-                return
+            if path is None: return
+            update_address()
             if path == '__memory__':
-                raw_xml = self.get_memory_xml(computer)
+                raw_xml = self.get_memory_xml(temp_computer_elem)
                 compact = self.compact_memory_xml(raw_xml)
                 content = self.decode_hacknet_markers(compact)
                 text.config(state=NORMAL)
                 text.delete(1.0, END)
                 text.insert(1.0, content)
                 text.config(state=DISABLED)
+                current_editing_path = None
                 return
             if path.endswith('/'):
                 text.config(state=NORMAL)
                 text.delete(1.0, END)
                 text.config(state=DISABLED)
+                current_editing_path = None
                 return
-
-            elem = self._find_fs_element(computer, path)
+            elem = self._find_fs_element_by_path(temp_computer_elem, path)
             if elem is None or elem.tag != 'file': return
             content = elem.text or ''
             fname = elem.get('name')
-
             if fname.lower().endswith('.dec') and content.startswith('#DEC_ENC::'):
                 try:
-                    _, _, _, final, _ = self.decrypt_all_layers_with_password(content, "")
-                    final = self.decode_hacknet_markers(final)
-                    text.config(state=NORMAL)
-                    text.delete(1.0, END)
-                    text.insert(1.0, final)
-                    text.config(state=DISABLED)
-                    return
-                except:
-                    pass
-                # 弹窗
-                def show_decrypted(result_text):
-                    text.config(state=NORMAL)
-                    text.delete(1.0, END)
-                    text.insert(1.0, result_text)
-                    text.config(state=DISABLED)
-
-                dlg = Toplevel(win)
-                dlg.title(f"解密 - {fname}")
-                dlg.geometry("300x120")
-                dlg.resizable(False, False)
-                Label(dlg, text="输入密码（留空则使用默认空密码）：").pack(pady=5)
-                pwd_entry = Entry(dlg, width=30)
-                pwd_entry.pack(pady=5)
-                pwd_entry.focus_set()
-
-                def try_pwd():
-                    password = pwd_entry.get()
-                    dlg.destroy()
-                    try:
-                        _, _, _, final, _ = self.decrypt_all_layers_with_password(content, password)
-                        final = self.decode_hacknet_markers(final)
-                        show_decrypted(final)
-                    except Exception as e:
-                        messagebox.showerror("解密失败", str(e))
-
-                def brute():
-                    dlg.destroy()
-                    try:
-                        _, _, _, final, _ = decrypt_all_layers(content)
-                        final = self.decode_hacknet_markers(final)
-                        show_decrypted(final)
-                    except Exception as e:
-                        messagebox.showerror("解密失败", str(e))
-
-                btn_frame = Frame(dlg)
-                btn_frame.pack(pady=5)
-                Button(btn_frame, text="确定", command=try_pwd, width=10).pack(side=LEFT, padx=5)
-                Button(btn_frame, text="暴力破解", command=brute, width=10).pack(side=LEFT, padx=5)
-                return
-
-            if fname.lower().endswith('.mem'):
+                    _, _, _, final, _ = decrypt_all_layers(content)
+                    content = final
+                except: pass
+            elif fname.lower().endswith('.mem'):
                 if content.startswith('MEMORY_DUMP : FORMAT v1.22 ----------'):
                     mem_content = self.decrypt_memory_dump(content)
                     if mem_content is not None:
                         content = self.decode_hacknet_markers(mem_content)
-                    else:
-                        idx = content.find('#DEC_ENC::')
-                        if idx != -1:
-                            enc_part = content[idx:]
-                            try:
-                                _, _, _, final, _ = decrypt_all_layers(enc_part)
-                                content = final
-                            except:
-                                pass
                 else:
                     idx = content.find('#DEC_ENC::')
                     if idx != -1:
@@ -920,44 +1046,261 @@ class Controller:
                         try:
                             _, _, _, final, _ = decrypt_all_layers(enc_part)
                             content = final
-                        except:
-                            pass
-
+                        except: pass
             content = self.decode_hacknet_markers(content)
             text.config(state=NORMAL)
             text.delete(1.0, END)
             text.insert(1.0, content)
-            text.config(state=DISABLED)
+            current_editing_path = path
 
         dir_tree.bind('<<TreeviewSelect>>', on_dir_select)
 
-    def _build_dir_tree(self, tree, parent_node, parent_path, folder_elem):
+        def on_right_click(event):
+            item = dir_tree.identify_row(event.y)
+            if item:
+                dir_tree.selection_set(item)
+                values = dir_tree.item(item, 'values')
+                path = values[0] if values else None
+                if path is None: return
+                if path == '__memory__':
+                    return
+                is_folder = path.endswith('/')
+                is_placeholder = path == ''
+                if is_placeholder: return
+
+                menu = Menu(win, tearoff=False)
+                protected = is_folder and path in ['/', '/home/', '/log/', '/bin/', '/sys/']
+
+                if is_folder:
+                    menu.add_command(label="新建文件", command=lambda: create_new_file(path))
+                    menu.add_command(label="新建文件夹", command=lambda: create_new_folder(path))
+                    menu.add_separator()
+                    menu.add_command(label="重命名", command=lambda: rename_item(path), state="disabled" if protected else "normal")
+                    menu.add_command(label="复制", command=lambda: copy_item(path))
+                    menu.add_separator()
+                    menu.add_command(label="粘贴", command=lambda: paste_to_folder(path), state="normal" if self.clipboard else "disabled")
+                    menu.add_separator()
+                    menu.add_command(label="删除", command=lambda: delete_item(path), state="disabled" if protected else "normal")
+                else:
+                    menu.add_command(label="重命名", command=lambda: rename_item(path))
+                    menu.add_separator()
+                    menu.add_command(label="复制", command=lambda: copy_item(path))
+                    menu.add_separator()
+                    menu.add_command(label="粘贴", command=lambda: paste_to_file(path), state="normal" if self.clipboard else "disabled")
+                    menu.add_separator()
+                    menu.add_command(label="删除", command=lambda: delete_item(path))
+
+                menu.post(event.x_root, event.y_root)
+
+        def create_new_file(parent_path):
+            name = simpledialog.askstring("新建文件", "输入文件名：", parent=win)
+            if not name or name.strip() == '' or name == '-空白-':
+                return
+            folder_elem = self._find_folder_by_path(temp_computer_elem, parent_path)
+            if folder_elem is None: return
+            if folder_elem.find(f"file[@name='{name}']") is not None:
+                messagebox.showwarning("错误", "文件已存在。")
+                return
+            file_elem = ET.SubElement(folder_elem, 'file', {'name': name})
+            file_elem.tail = '\n'
+            self._sort_folder_children(folder_elem)
+            update_save_menu()
+            rebuild_tree()
+
+        def create_new_folder(parent_path):
+            name = simpledialog.askstring("新建文件夹", "输入文件夹名：", parent=win)
+            if not name or name.strip() == '' or name == '-空白-':
+                return
+            folder_elem = self._find_folder_by_path(temp_computer_elem, parent_path)
+            if folder_elem is None: return
+            if folder_elem.find(f"folder[@name='{name}']") is not None:
+                messagebox.showwarning("错误", "文件夹已存在。")
+                return
+            new_folder = ET.SubElement(folder_elem, 'folder', {'name': name})
+            new_folder.tail = '\n'
+            self._sort_folder_children(folder_elem)
+            update_save_menu()
+            rebuild_tree()
+
+        def rename_item(path):
+            elem = self._find_fs_element_by_path(temp_computer_elem, path)
+            if elem is None: return
+            old_name = elem.get('name')
+            new_name = simpledialog.askstring("重命名", f"输入新名称 (原: {old_name})：", initialvalue=old_name, parent=win)
+            if not new_name or new_name.strip() == '' or new_name == '-空白-':
+                return
+            parent = self._find_parent_folder(temp_computer_elem, path)
+            if parent is not None:
+                tag = elem.tag
+                if parent.find(f"{tag}[@name='{new_name}']") is not None:
+                    messagebox.showwarning("错误", "名称已存在。")
+                    return
+            elem.set('name', new_name)
+            update_save_menu()
+            rebuild_tree()
+
+        def copy_item(path):
+            elem = self._find_fs_element_by_path(temp_computer_elem, path)
+            if elem is None: return
+            copied = self._deep_copy_element(elem)
+            self.clipboard = (elem.tag, copied)
+
+        def paste_to_folder(target_folder_path):
+            folder_elem = self._find_folder_by_path(temp_computer_elem, target_folder_path)
+            if folder_elem is None: return
+            _do_paste(folder_elem)
+            self._sort_folder_children(folder_elem)
+            update_save_menu()
+            rebuild_tree()
+
+        def paste_to_file(file_path):
+            parent_folder = self._find_parent_folder(temp_computer_elem, file_path)
+            if parent_folder is None: return
+            _do_paste(parent_folder)
+            if parent_folder is not None:
+                self._sort_folder_children(parent_folder)
+            update_save_menu()
+            rebuild_tree()
+
+        def _do_paste(target_folder_elem):
+            tag, copied_elem = self.clipboard
+            if tag == 'file':
+                file_name = copied_elem.get('name')
+                existing = target_folder_elem.find(f"file[@name='{file_name}']")
+                if existing is not None:
+                    resolve = self._show_file_conflict(win, copied_elem.text or '', existing.text or '', file_name)
+                    if resolve == 'overwrite':
+                        target_folder_elem.remove(existing)
+                    elif resolve == 'skip':
+                        return
+                target_folder_elem.append(self._deep_copy_element(copied_elem))
+            elif tag == 'folder':
+                folder_name = copied_elem.get('name')
+                existing_folder = target_folder_elem.find(f"folder[@name='{folder_name}']")
+                if existing_folder is not None:
+                    self._merge_folders(existing_folder, copied_elem, win)
+                else:
+                    target_folder_elem.append(self._deep_copy_element(copied_elem))
+
+        def delete_item(path):
+            elem = self._find_fs_element_by_path(temp_computer_elem, path)
+            if elem is None: return
+            parent = self._find_parent_folder(temp_computer_elem, path)
+            if parent is not None:
+                parent.remove(elem)
+            update_save_menu()
+            rebuild_tree()
+
+        def _show_file_conflict(parent_win, clipboard_content, original_content, filename):
+            win = Toplevel(parent_win)
+            win.title("文件冲突")
+            win.geometry("600x400")
+            Label(win, text=f"文件 '{filename}' 已存在，如何处理？").pack(pady=5)
+            paned = PanedWindow(win, orient=HORIZONTAL)
+            paned.pack(fill=BOTH, expand=True, padx=5, pady=5)
+            left_frame = Frame(paned)
+            paned.add(left_frame)
+            Label(left_frame, text="剪切板内容").pack()
+            text1 = Text(left_frame, wrap=WORD)
+            text1.insert(1.0, clipboard_content)
+            text1.config(state=DISABLED)
+            text1.pack(fill=BOTH, expand=True)
+            right_frame = Frame(paned)
+            paned.add(right_frame)
+            Label(right_frame, text="原内容").pack()
+            text2 = Text(right_frame, wrap=WORD)
+            text2.insert(1.0, original_content)
+            text2.config(state=DISABLED)
+            text2.pack(fill=BOTH, expand=True)
+            result = {'action': None}
+            def set_action(act):
+                result['action'] = act
+                win.destroy()
+            btn_frame = Frame(win)
+            btn_frame.pack(pady=5)
+            Button(btn_frame, text="覆盖", command=lambda: set_action('overwrite')).pack(side=LEFT, padx=5)
+            Button(btn_frame, text="跳过", command=lambda: set_action('skip')).pack(side=LEFT, padx=5)
+            win.wait_window()
+            return result['action']
+
+        def _merge_folders(target_folder, source_folder, win):
+            for child in source_folder:
+                tag = child.tag
+                name = child.get('name')
+                if tag == 'file':
+                    existing = target_folder.find(f"file[@name='{name}']")
+                    if existing is not None:
+                        resolve = self._show_file_conflict(win, child.text or '', existing.text or '', name)
+                        if resolve == 'overwrite':
+                            target_folder.remove(existing)
+                            target_folder.append(self._deep_copy_element(child))
+                        elif resolve == 'skip':
+                            continue
+                    else:
+                        target_folder.append(self._deep_copy_element(child))
+                elif tag == 'folder':
+                    existing_folder = target_folder.find(f"folder[@name='{name}']")
+                    if existing_folder is not None:
+                        self._merge_folders(existing_folder, child, win)
+                    else:
+                        target_folder.append(self._deep_copy_element(child))
+
+        dir_tree.bind('<Button-3>', on_right_click)
+
+        def ctrl_s(event):
+            if check_modified():
+                save_modifications()
+        win.bind('<Control-s>', ctrl_s)
+
+        def on_close():
+            if check_modified():
+                answer = messagebox.askyesnocancel("未保存修改", "有未保存的修改，是否保存？")
+                if answer is None:
+                    return
+                elif answer:
+                    save_modifications()
+            win.destroy()
+        win.protocol("WM_DELETE_WINDOW", on_close)
+
+        rebuild_tree()
+        root_children = dir_tree.get_children('')
+        if root_children:
+            dir_tree.item(root_children[0], open=True)
+        update_address()
+
+    def _get_parent_path(self, path):
+        clean = path.rstrip('/')
+        parent = '/'.join(clean.split('/')[:-1]) or '/'
+        return parent if parent == '/' else parent + '/'
+
+    def _build_dir_tree_with_editing(self, tree, parent_node, parent_path, folder_elem):
         folder_name = folder_elem.get('name')
         if folder_name == '/':
             current_path = '/'
         else:
             current_path = (parent_path.rstrip('/') + '/' + folder_name) if parent_path != '/' else '/' + folder_name
+        if not current_path.endswith('/'):
+            current_path += '/'
         node = tree.insert(parent_node, 'end', text=folder_name, values=(current_path,))
         has_children = False
         for child in folder_elem:
             if child.tag == 'folder':
-                self._build_dir_tree(tree, node, current_path, child)
+                self._build_dir_tree_with_editing(tree, node, current_path, child)
                 has_children = True
             elif child.tag == 'file':
                 fname = child.get('name')
-                fpath = current_path.rstrip('/') + '/' + fname
+                fpath = current_path + fname
                 tree.insert(node, 'end', text=fname, values=(fpath,))
                 has_children = True
         if not has_children:
             tree.insert(node, 'end', text='-空白-', values=('',))
 
-    def _find_fs_element(self, computer, path):
-        fs = computer.find('filesystem')
-        if fs is None: return None
-        root = fs.find("folder[@name='/']")
+    def _find_fs_element_by_path(self, computer_elem, path):
         if path == '/' or path == '':
-            return root
-        parts = [p for p in path.strip('/').split('/') if p]
+            return computer_elem.find('filesystem/folder[@name="/"]')
+        clean_path = path.rstrip('/')
+        parts = [p for p in clean_path.strip('/').split('/') if p]
+        root = computer_elem.find('filesystem/folder[@name="/"]')
         cur = root
         for i, part in enumerate(parts):
             found = None
@@ -968,12 +1311,123 @@ class Controller:
             if found is not None:
                 cur = found
                 continue
-            if i == len(parts) - 1:
-                for f in cur.findall('file'):
-                    if f.get('name') == part:
-                        return f
+            for f in cur.findall('file'):
+                if f.get('name') == part:
+                    return f
             return None
         return cur
+
+    def _find_folder_by_path(self, computer_elem, path):
+        elem = self._find_fs_element_by_path(computer_elem, path)
+        if elem is not None and elem.tag == 'folder':
+            return elem
+        return None
+
+    def _find_parent_folder(self, computer_elem, path):
+        if path == '/' or path == '':
+            return None
+        clean = path.rstrip('/')
+        parent_clean = '/'.join(clean.split('/')[:-1]) or '/'
+        parent_path = parent_clean if parent_clean == '/' else parent_clean + '/'
+        return self._find_folder_by_path(computer_elem, parent_path)
+
+    def _deep_copy_element(self, elem):
+        return ET.fromstring(ET.tostring(elem, encoding='unicode'))
+
+    # ==================== DEC 文件查看器 ====================
+    def showDECFiles(self):
+        if self.xml_root is None:
+            messagebox.showinfo(message="请先打开一个存档！")
+            return
+        dec_files = []
+        for computer in self.xml_root.findall('.//computer'):
+            ip = computer.get('ip')
+            name = computer.get('name')
+            filesystem = computer.find('filesystem')
+            if filesystem is not None:
+                root_folder = filesystem.find("folder[@name='/']")
+                if root_folder is not None:
+                    collect_dec_files_from_folder(root_folder, "", ip, name, computer, dec_files)
+        if not dec_files:
+            messagebox.showinfo(message="存档中没有找到 .dec 文件！")
+            return
+        window = Toplevel(self.ui)
+        window.title("DEC 文件查看器")
+        window.geometry("900x500")
+        columns = ("文件名", "来源主机名", "地址")
+        tree = Treeview(window, show="headings", columns=columns)
+        for col in columns:
+            tree.heading(col, text=col)
+            tree.column(col, anchor='center', width=200)
+        tree.pack(fill=BOTH, expand=True, padx=10, pady=10)
+        for fname, hostname, addr, _, _, _ in dec_files:
+            tree.insert('', END, values=(fname, hostname, addr))
+
+        def on_dbl_click(event):
+            item = tree.selection()
+            if not item: return
+            vals = tree.item(item[0], 'values')
+            fname, hostname, addr = vals[0], vals[1], vals[2]
+            content = next((e[3] for e in dec_files if e[0]==fname and e[1]==hostname and e[2]==addr), None)
+            if not content: return
+
+            def show_result(hdr, ip, suffix, final, passcodes):
+                base = os.path.splitext(fname)[0]
+                final_name = base + suffix
+                result_win = Toplevel(self.ui)
+                result_win.title(f"解密结果 - {fname}")
+                result_win.geometry("800x600")
+                menubar = Menu(result_win)
+                file_menu = Menu(menubar, tearoff=False)
+                file_menu.add_command(label="保存到玩家/home目录", command=lambda: self.save_to_home(final_name, final))
+                file_menu.add_command(label="保存到本地", command=lambda: self.save_to_local(final_name, final))
+                menubar.add_cascade(label="文件", menu=file_menu)
+                result_win.config(menu=menubar)
+                final = self.decode_hacknet_markers(final)
+                text = Text(result_win, wrap=WORD)
+                text.insert(1.0, f"# 元数据（DECHead）_\nHeader: {hdr}\nIP: {ip}\nName: {final_name}\nPasscode: {passcodes[0]}\n# 元数据结束\n\n{final}")
+                text.config(state=DISABLED)
+                text.pack(fill=BOTH, expand=True, padx=10, pady=10)
+
+            try:
+                hdr, ip, suffix, final, passcodes = self.decrypt_all_layers_with_password(content, "")
+                show_result(hdr, ip, suffix, final, passcodes)
+                return
+            except:
+                pass
+
+            dlg = Toplevel(self.ui)
+            dlg.title(f"解密 - {fname}")
+            dlg.geometry("300x120")
+            dlg.resizable(False, False)
+            Label(dlg, text="输入密码（留空则使用默认空密码）：").pack(pady=5)
+            pwd_entry = Entry(dlg, width=30)
+            pwd_entry.pack(pady=5)
+            pwd_entry.focus_set()
+
+            def try_pwd():
+                password = pwd_entry.get()
+                dlg.destroy()
+                try:
+                    hdr, ip, suffix, final, passcodes = self.decrypt_all_layers_with_password(content, password)
+                    show_result(hdr, ip, suffix, final, passcodes)
+                except Exception as e:
+                    messagebox.showerror("解密失败", str(e))
+
+            def brute():
+                dlg.destroy()
+                try:
+                    hdr, ip, suffix, final, passcodes = decrypt_all_layers(content)
+                    show_result(hdr, ip, suffix, final, passcodes)
+                except Exception as e:
+                    messagebox.showerror("解密失败", str(e))
+
+            btn_frame = Frame(dlg)
+            btn_frame.pack(pady=5)
+            Button(btn_frame, text="确定", command=try_pwd, width=10).pack(side=LEFT, padx=5)
+            Button(btn_frame, text="暴力破解", command=brute, width=10).pack(side=LEFT, padx=5)
+
+        tree.bind('<Double-1>', on_dbl_click)
 
     # ==================== 内存转储查看器 ====================
     def showMemoryDumps(self):
@@ -1068,117 +1522,19 @@ class Controller:
                 f.write(content)
             messagebox.showinfo("成功", f"内存转储已保存到 {path}")
 
-    # ==================== DEC 文件查看器 ====================
-    def showDECFiles(self):
-        if self.xml_root is None:
-            messagebox.showinfo(message="请先打开一个存档！")
-            return
-        dec_files = []
-        for computer in self.xml_root.findall('.//computer'):
-            ip = computer.get('ip')
-            name = computer.get('name')
-            filesystem = computer.find('filesystem')
-            if filesystem is not None:
-                root_folder = filesystem.find("folder[@name='/']")
-                if root_folder is not None:
-                    collect_dec_files_from_folder(root_folder, "", ip, name, computer, dec_files)
-        if not dec_files:
-            messagebox.showinfo(message="存档中没有找到 .dec 文件！")
-            return
-        window = Toplevel(self.ui)
-        window.title("DEC 文件查看器")
-        window.geometry("900x500")
-        columns = ("文件名", "来源主机名", "地址")
-        tree = Treeview(window, show="headings", columns=columns)
-        for col in columns:
-            tree.heading(col, text=col)
-            tree.column(col, anchor='center', width=200)
-        tree.pack(fill=BOTH, expand=True, padx=10, pady=10)
-        for fname, hostname, addr, _, _, _ in dec_files:
-            tree.insert('', END, values=(fname, hostname, addr))
-
-        def on_dbl_click(event):
-            item = tree.selection()
-            if not item: return
-            vals = tree.item(item[0], 'values')
-            fname, hostname, addr = vals[0], vals[1], vals[2]
-            content = next((e[3] for e in dec_files if e[0]==fname and e[1]==hostname and e[2]==addr), None)
-            if not content: return
-
-            def show_result(hdr, ip, suffix, final, passcodes):
-                base = os.path.splitext(fname)[0]
-                final_name = base + suffix
-                result_win = Toplevel(self.ui)
-                result_win.title(f"解密结果 - {fname}")
-                result_win.geometry("800x600")
-                menubar = Menu(result_win)
-                file_menu = Menu(menubar, tearoff=False)
-                file_menu.add_command(label="保存到玩家/home目录", command=lambda: self.save_to_home(final_name, final))
-                file_menu.add_command(label="保存到本地", command=lambda: self.save_to_local(final_name, final))
-                menubar.add_cascade(label="文件", menu=file_menu)
-                result_win.config(menu=menubar)
-                final = self.decode_hacknet_markers(final)
-                text = Text(result_win, wrap=WORD)
-                text.insert(1.0, f"# 元数据（DECHead）_\nHeader: {hdr}\nIP: {ip}\nName: {final_name}\nPasscode: {passcodes[0]}\n# 元数据结束\n\n{final}")
-                text.config(state=DISABLED)
-                text.pack(fill=BOTH, expand=True, padx=10, pady=10)
-
-            # 尝试空密码
-            try:
-                hdr, ip, suffix, final, passcodes = self.decrypt_all_layers_with_password(content, "")
-                show_result(hdr, ip, suffix, final, passcodes)
-                return
-            except:
-                pass
-
-            dlg = Toplevel(self.ui)
-            dlg.title(f"解密 - {fname}")
-            dlg.geometry("300x120")
-            dlg.resizable(False, False)
-            Label(dlg, text="输入密码（留空则使用默认空密码）：").pack(pady=5)
-            pwd_entry = Entry(dlg, width=30)
-            pwd_entry.pack(pady=5)
-            pwd_entry.focus_set()
-
-            def try_pwd():
-                password = pwd_entry.get()
-                dlg.destroy()
-                try:
-                    hdr, ip, suffix, final, passcodes = self.decrypt_all_layers_with_password(content, password)
-                    show_result(hdr, ip, suffix, final, passcodes)
-                except Exception as e:
-                    messagebox.showerror("解密失败", str(e))
-
-            def brute():
-                dlg.destroy()
-                try:
-                    hdr, ip, suffix, final, passcodes = decrypt_all_layers(content)
-                    show_result(hdr, ip, suffix, final, passcodes)
-                except Exception as e:
-                    messagebox.showerror("解密失败", str(e))
-
-            btn_frame = Frame(dlg)
-            btn_frame.pack(pady=5)
-            Button(btn_frame, text="确定", command=try_pwd, width=10).pack(side=LEFT, padx=5)
-            Button(btn_frame, text="暴力破解", command=brute, width=10).pack(side=LEFT, padx=5)
-
-        tree.bind('<Double-1>', on_dbl_click)
-
-    # ==================== DEC 文件加解密器（修正底部标签） ====================
+    # ==================== DEC 加解密器 ====================
     def showDECEncryptor(self):
         win = Toplevel(self.ui)
         win.title("DEC 文件加解密器")
         win.geometry("850x650")
         win.resizable(True, True)
 
-        # 菜单
         menubar = Menu(win)
         file_menu = Menu(menubar, tearoff=False)
 
         def open_plain_file():
             path = filedialog.askopenfilename(title="打开明文文件", filetypes=[("文本文件", "*.txt"), ("所有文件", "*.*")])
-            if not path:
-                return
+            if not path: return
             try:
                 with open(path, 'r', encoding='utf-8') as f:
                     content = f.read()
@@ -1189,8 +1545,7 @@ class Controller:
 
         def open_cipher_file():
             path = filedialog.askopenfilename(title="打开密文文件", filetypes=[("DEC 文件", "*.dec"), ("所有文件", "*.*")])
-            if not path:
-                return
+            if not path: return
             try:
                 with open(path, 'r', encoding='utf-8') as f:
                     content = f.read()
@@ -1201,52 +1556,53 @@ class Controller:
 
         def save_plain_file():
             content = plain_text.get("1.0", END).strip()
-            if not content:
-                messagebox.showwarning("无内容", "明文文本框为空，无法保存。")
-                return
+            if not content: return
             path = filedialog.asksaveasfilename(title="保存明文文件", defaultextension=".txt",
                                                 filetypes=[("文本文件", "*.txt"), ("所有文件", "*.*")])
-            if not path:
-                return
+            if not path: return
             try:
                 with open(path, 'w', encoding='utf-8') as f:
                     f.write(content)
-                messagebox.showinfo("保存成功", f"文件已保存到 {path}")
             except Exception as e:
                 messagebox.showerror("保存失败", str(e))
 
         def save_cipher_file():
             content = cipher_text.get("1.0", END).strip()
-            if not content:
-                messagebox.showwarning("无内容", "密文文本框为空，无法保存。")
-                return
+            if not content: return
             path = filedialog.asksaveasfilename(title="保存密文文件", defaultextension=".dec",
                                                 filetypes=[("DEC 文件", "*.dec"), ("所有文件", "*.*")])
-            if not path:
-                return
+            if not path: return
             try:
                 with open(path, 'w', encoding='utf-8') as f:
                     f.write(content)
-                messagebox.showinfo("保存成功", f"文件已保存到 {path}")
             except Exception as e:
                 messagebox.showerror("保存失败", str(e))
 
         file_menu.add_command(label="打开 txt 明文", command=open_plain_file)
         file_menu.add_command(label="打开 dec 密文", command=open_cipher_file)
         file_menu.add_separator()
-        file_menu.add_command(label="保存明文 txt", command=save_plain_file)
-        file_menu.add_command(label="保存密文 dec", command=save_cipher_file)
+        file_menu.add_command(label="保存明文 txt", command=save_plain_file, state="disabled")
+        file_menu.add_command(label="保存密文 dec", command=save_cipher_file, state="disabled")
         menubar.add_cascade(label="文件", menu=file_menu)
         win.config(menu=menubar)
 
-        # 整体布局：三列 + 底部一行
+        def update_plain_save_state():
+            if plain_text.get("1.0", END).strip():
+                file_menu.entryconfig("保存明文 txt", state="normal")
+            else:
+                file_menu.entryconfig("保存明文 txt", state="disabled")
+
+        def update_cipher_save_state():
+            if cipher_text.get("1.0", END).strip():
+                file_menu.entryconfig("保存密文 dec", state="normal")
+            else:
+                file_menu.entryconfig("保存密文 dec", state="disabled")
+
         win.grid_columnconfigure(0, weight=1, uniform="col")
         win.grid_columnconfigure(1, weight=0)
         win.grid_columnconfigure(2, weight=1, uniform="col")
-        win.grid_rowconfigure(0, weight=1)  # 文本框行伸缩
-        win.grid_rowconfigure(1, weight=0)  # 底部行固定高度
+        win.grid_rowconfigure(0, weight=1)
 
-        # 左侧明文区
         left_frame = Frame(win)
         left_frame.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
         left_frame.grid_rowconfigure(1, weight=1)
@@ -1254,8 +1610,8 @@ class Controller:
         Label(left_frame, text="明文内容").grid(row=0, column=0, sticky="w")
         plain_text = Text(left_frame, wrap=WORD, width=40, height=20)
         plain_text.grid(row=1, column=0, sticky="nsew")
+        plain_text.bind("<KeyRelease>", lambda e: update_plain_save_state())
 
-        # 中间按钮（垂直居中）
         mid_frame = Frame(win, width=80)
         mid_frame.grid(row=0, column=1, sticky="ns", padx=10, pady=5)
         mid_frame.grid_propagate(False)
@@ -1288,12 +1644,10 @@ class Controller:
             if len(header_fields) < 4:
                 messagebox.showerror("格式错误", "密文头部字段不足")
                 return
-
             password = pwd_var.get()
             passcode = get_passcode(password) if password else EMPTY_PASSCODE
             try:
                 hdr, ip, suffix, content = decrypt_layer(cipher, passcode)
-                # 回填标题和 IP
                 title_var.set(hdr)
                 ip_var.set(ip)
                 plain_text.delete("1.0", END)
@@ -1304,7 +1658,6 @@ class Controller:
         Button(btn_container, text="加密 →", command=do_encrypt, width=10).pack(pady=3)
         Button(btn_container, text="← 解密", command=do_decrypt, width=10).pack(pady=3)
 
-        # 右侧密文区
         right_frame = Frame(win)
         right_frame.grid(row=0, column=2, sticky="nsew", padx=5, pady=5)
         right_frame.grid_rowconfigure(1, weight=1)
@@ -1312,29 +1665,26 @@ class Controller:
         Label(right_frame, text="密文内容").grid(row=0, column=0, sticky="w")
         cipher_text = Text(right_frame, wrap=WORD, width=40, height=20)
         cipher_text.grid(row=1, column=0, sticky="nsew")
+        cipher_text.bind("<KeyRelease>", lambda e: update_cipher_save_state())
 
-        # ---------- 底部一行：标题、IP、密码（三个独立子 Frame） ----------
         bottom_frame = Frame(win)
         bottom_frame.grid(row=1, column=0, columnspan=3, sticky="ew", padx=10, pady=5)
         bottom_frame.grid_columnconfigure(0, weight=1)
         bottom_frame.grid_columnconfigure(1, weight=1)
         bottom_frame.grid_columnconfigure(2, weight=1)
 
-        # 标题
         title_frame = Frame(bottom_frame)
         title_frame.grid(row=0, column=0, sticky="ew", padx=5)
         Label(title_frame, text="标题:").pack(side=LEFT)
         title_var = StringVar(value="Title")
         Entry(title_frame, textvariable=title_var).pack(side=LEFT, expand=True, fill=X)
 
-        # IP
         ip_frame = Frame(bottom_frame)
         ip_frame.grid(row=0, column=1, sticky="ew", padx=5)
         Label(ip_frame, text="IP:").pack(side=LEFT)
         ip_var = StringVar(value="127.0.0.1")
         Entry(ip_frame, textvariable=ip_var).pack(side=LEFT, expand=True, fill=X)
 
-        # 密码
         pwd_frame = Frame(bottom_frame)
         pwd_frame.grid(row=0, column=2, sticky="ew", padx=5)
         Label(pwd_frame, text="密码:").pack(side=LEFT)
