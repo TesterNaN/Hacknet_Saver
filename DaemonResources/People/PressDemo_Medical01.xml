@@ -1,0 +1,17 @@
+<?xml version = "1.0" encoding = "UTF-8" ?>
+<Person id="csec_med_01" handle="Sal" firstName="Elanor" lastName="Helleran" isMale="false">
+  <Birthplace name="London" />
+  <Degrees>
+    <Degree uni="Manchester University" gpa="3.1">Masters in Computer Science</Degree>
+  </Degrees>
+  <DOB>06/08/1991 14:22:00</DOB>
+  <Medical>
+    <Blood>AA</Blood>
+    <Height>167</Height>
+    <Allergies>NONE</Allergies>
+    <Perscription>Amiodarone (Cordarone) x70 bi-monthly</Perscription>
+    <Notes>Patient diagnosed with Arrhythmia. A mild case at first which has been accentuated by an overuse of caffeine and other stimulants. Patient has been repeatedly advised against the volume of energy drinks and coffee she openly admits to consuming, but recurrences are common.
+Advise to perform blood check for stimulants (legal and otherwise) before making a full diagnosis.</Notes>
+  </Medical>
+  <Notes>Press build medical case</Notes>
+</Person>

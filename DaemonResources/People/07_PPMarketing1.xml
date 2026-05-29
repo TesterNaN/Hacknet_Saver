@@ -1,0 +1,10 @@
+<?xml version = "1.0" encoding = "UTF-8" ?>
+<Person id="kwinters" handle="blizz" firstName="Kevin" lastName="Winters" isMale="true">
+  <Birthplace name="London" />
+  <Degrees>
+    <Degree uni="University of Manchester" gpa="2.9">Bachelor of Marketing</Degree>
+  </Degrees>
+  <DOB>03/08/1988 13:10:06</DOB>
+  <Notes>
+  </Notes>
+</Person>

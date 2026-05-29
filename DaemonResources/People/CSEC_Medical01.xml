@@ -1,0 +1,18 @@
+<?xml version = "1.0" encoding = "UTF-8" ?>
+<Person id="csec_med_01" handle="Whitewash" firstName="Jonas" lastName="Sandburg" isMale="true">
+  <Birthplace name="London" />
+  <Degrees>
+    <Degree uni="Manchester University" gpa="2.9">Masters in Computer Science</Degree>
+  </Degrees>
+  <DOB>05/03/1993 14:00:00</DOB>
+  <Medical>
+    <Blood>BO</Blood>
+    <Height>166</Height>
+    <Allergies>NONE</Allergies>
+    <Perscription>Albendazole x70 bi-monthly :: See Notes</Perscription>
+    <Perscription>Ivermectin x35 monthly :: See Notes</Perscription>
+    <Notes>Patient has an acute case of Testicular Elephantitis, first noted at age 8, treatment has been applied regulary since to great effect. Though swelling of affected regions is INCREDIBLY noticable, excellent hygine practices and continued treatment has made it managable.
+    </Notes>
+  </Medical>
+  <Notes>CSEC Med case for M_09  </Notes>
+</Person>

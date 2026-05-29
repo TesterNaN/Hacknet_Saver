@@ -1,0 +1,8 @@
+You are authenticated for open file uploading to this server.
+Use the "upload [LOCAL_FILENAME]" command to upload files
+
+
+REMINDER: Files downloaded with [scp] are downloaded to /home
+(or /bin for executables)
+Uploads from there need their path proceeded as such:  home/[FILENAME]
+The Tab key can be used to autocomplete paths and names of local files to upload.

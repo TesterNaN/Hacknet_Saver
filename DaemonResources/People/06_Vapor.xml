@@ -1,0 +1,16 @@
+<?xml version = "1.0" encoding = "UTF-8" ?>
+<Person id="nstanford" handle="nanst" firstName="Alexandera" lastName="Grant" isMale="false">
+  <Birthplace name="Vancouver" />
+  <Degrees>
+    <Degree uni="University of British Columbia" gpa="3.8">Masters in Software Engineering</Degree>
+  </Degrees>
+  <DOB>02/09/1989 06:33:19</DOB>
+  <Medical>
+    <Blood>AA</Blood>
+    <Height>169</Height>
+    <Allergies>NONE</Allergies>
+    <Notes>Patient appears in excellent physical shape, though evidence of extensive prior buising exists. Attributed to extensive martial arts training. Examined bone structure for weakness developed in conditioning, but results seemed fine.</Notes>
+  </Medical>
+  <Notes>
+  </Notes>
+</Person>

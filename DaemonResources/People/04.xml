@@ -1,0 +1,9 @@
+<?xml version = "1.0" encoding = "UTF-8" ?>
+<Person id="nstanford" handle="nanst" firstName="Nathan" lastName="Stanford" isMale="true">
+  <Birthplace name="London" />
+  <Degrees>
+    <Degree uni="University of Manchester" gpa="3.5">Bachelor of Computer Science</Degree>
+  </Degrees>
+  <Notes>
+  </Notes>
+</Person>

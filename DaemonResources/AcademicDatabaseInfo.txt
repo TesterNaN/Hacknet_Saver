@@ -1,0 +1,4 @@
+Welcome to the International Academic Database
+This public access server provides centralized access to academic records from every internationally recognized University in the world.
+Our database is managed and maintained by the administrators of this secure terminal, with additions from select leading universities that contribute to the database.
+If you are the Vice Chancellor of a university that wishes to contribute to this database and be internationally recognized, email our administrators at admin@mail.academic.org

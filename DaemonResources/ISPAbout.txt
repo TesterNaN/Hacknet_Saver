@@ -1,0 +1,12 @@
+This server is an ISP routing and management system
+designed to allow for easy setup and administration
+of third party ISP management companies.
+To use the management system, first acquire an
+administrator account for this machine
+(contact your sysadmin team), then search for the
+ IP address in question.
+
+
+If this program has technical issues,
+contact customer support on
+1-800-827-6364

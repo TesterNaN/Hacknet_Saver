@@ -1,0 +1,28 @@
+<?xml version = "1.0" encoding = "UTF-8" ?>
+<Person id="csec_med_01" handle="Ehwitt" firstName="Elliot" lastName="Whit" isMale="true">
+  <Birthplace name="London" />
+  <Degrees>
+    <Degree uni="Manchester University" gpa="3.3">Masters of Law</Degree>
+    <Degree uni="Manchester University" gpa="3.1">Bachelor of Political Sciences</Degree>
+  </Degrees>
+  <DOB>09/09/1961 22:00:00</DOB>
+  <Medical>
+    <Blood>BO</Blood>
+    <Height>166</Height>
+    <Allergies>NONE</Allergies>
+    <Perscription>Ivermectin x35 monthly :: Heartrate regulation</Perscription>
+    <Notes>Due to reccuring and critical arrythmetic problems in the patient's heart, they have been fitted with a pacemaker that can allow some fine tuning to account for unknown variables without invasive surgery.
+    
+References:
+. 
+. 
+Pacemaker connection ID: 202.6.141.219
+Documentation and Notes: 66.96.147.84
+. 
+.
+Extra Details:
+Before taking any action that might disrupt the pacemaker, or performing any invasive surgery, contact the manufacturers to confirm it's stability.
+    </Notes>
+  </Medical>
+  <Notes>Pacemaker mission case</Notes>
+</Person>

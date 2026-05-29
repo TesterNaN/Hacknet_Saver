@@ -1,0 +1,18 @@
+<?xml version = "1.0" encoding = "UTF-8" ?>
+<Person id="entechboss" handle="Jojo" firstName="Joseph" lastName="Jorioni" isMale="true">
+  <Birthplace name="Califonia" />
+  <Degrees>
+    <Degree uni="University of California" gpa="2.9">Bachelor of Software Engineering</Degree>
+  </Degrees>
+  <Medical>
+    <Blood>AA</Blood>
+    <Height>178</Height>
+    <Allergies>NONE</Allergies>
+    <Perscription> Spironolactone x70 bi-monthly :: Aldosterone Inhibitor as a cardiac regulator</Perscription>
+    <Notes>Patient suffers an acute case of Angina - blood flow for oxygen delivery to the heart is dramatically lower than usual due to vascular defects evident since birth.
+Patient is outfitted with a regulating monitor that can alert him when SpO2 is low, as he is of much greater risk of heart failure, and must react quickly.
+This is not a pacemaker, but merely an early alarm system.</Notes>
+  </Medical>
+  <Notes>
+  </Notes>
+</Person>

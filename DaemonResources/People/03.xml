@@ -1,0 +1,10 @@
+<?xml version = "1.0" encoding = "UTF-8" ?>
+<Person id="dleatrou" handle="DL_CEO" firstName="David" lastName="Leatrou" isMale="true">
+  <Birthplace name="Texas" />
+  <Degrees>
+    <Degree uni="University of Texas" gpa="2.3">Bachelor of Commerce</Degree>
+  </Degrees>
+  <Notes>
+    Destined to one day be the greatest/worst CEO of all time and found a brilliant company that solves everyone's needs. A little overdramatic.
+  </Notes>
+</Person>

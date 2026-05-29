@@ -1,0 +1,10 @@
+<?xml version = "1.0" encoding = "UTF-8" ?>
+<Person id="jStevens" handle="jjStv" firstName="Jacob" lastName="Stevens" isMale="true">
+  <Birthplace name="Perth" />
+  <Degrees>
+    <Degree uni="University of Western Australia" gpa="2.3">Bachelor of Buisness Law</Degree>
+  </Degrees>
+  <Notes>
+    A generally unstudious individual that has acheived moderate buisness success through worker exploitation and franchising smarts.
+  </Notes>
+</Person>

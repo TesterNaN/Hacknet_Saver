@@ -1,0 +1,10 @@
+<?xml version = "1.0" encoding = "UTF-8" ?>
+<Person id="entechboss" handle="Coe" firstName="Ryan" lastName="Crendor" isMale="true">
+  <Birthplace name="Califonia" />
+  <Degrees>
+    <Degree uni="University of California" gpa="3.2">Bachelor of Software Engineering</Degree>
+    <Degree uni="University of California" gpa="3.4">Bachelor of Management</Degree>
+  </Degrees>
+  <Notes>
+  </Notes>
+</Person>

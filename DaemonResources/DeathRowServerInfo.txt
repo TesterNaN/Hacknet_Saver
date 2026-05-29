@@ -1,0 +1,19 @@
+This database exists to preserve and curate details of the executed offenders on Death row, including, but not limited to, their final statements and offence details.
+
+Gender and Racial Statistics of Death Row Offenders
+
+Race     Female   Male    Total
+--------------------------------------
+White      5         76       81
+            55.6%    28.7%    29.6%
+
+Black      3         107      110
+            33.3%    40.4%    40.1%
+
+Hispanic   1         78       79
+            11.1%     29.4%    28.8%
+
+Other      0         4        4
+            0.0%     1.5%       1.5%
+
+TOTAL      9         265      274

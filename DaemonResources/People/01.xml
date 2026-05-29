@@ -1,0 +1,25 @@
+<?xml version = "1.0" encoding = "UTF-8" ?>
+<Person id="jStalvern" handle="Dango4lyf" firstName="John" lastName="Stalvern" isMale="true">
+  <Birthplace name="London" />
+  <Degrees>
+    <Degree uni="Manchester University" gpa="3.3">Masters in Digital Marketing</Degree>
+  </Degrees>
+  <DOB>22/06/1965 14:22:00</DOB>
+  <Medical>
+    <Blood>AA</Blood>
+    <Height>158</Height>
+    <Allergies>Latex (Mild),Peanuts</Allergies>
+    <Perscription>Auvi-Q (epinephrine shot) Reccuring Indefinitely :: For application in case of allergic reaction</Perscription>
+    <Perscription>Cymbalta x32dose monthly :: For duloxetine, addressing peripheral neuropathy</Perscription>
+    
+    <Notes>Frequent complaints about back pain, identified as minor nerve damage.
+Cymbalta perscribed for double function as anti-anxety treatment, given some erratic behaviour during visits.
+    </Notes>
+  </Medical>
+  <Notes>
+    A digital marketing specialist working for a computer security software company. 
+    He can be bought over by a hacker group by giving him a forged degree in 
+    digital computer security (he is ridiculed (accuratley) about knowing 
+    nothing about what he sells by his co-workers).
+  </Notes>
+</Person>

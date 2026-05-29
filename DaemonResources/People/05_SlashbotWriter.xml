@@ -1,0 +1,16 @@
+<?xml version = "1.0" encoding = "UTF-8" ?>
+<Person id="twilkins" handle="twilk" firstName="Tom" lastName="Wilkins" isMale="true">
+  <Birthplace name="California" />
+  <Degrees>
+    <Degree uni="University of Manchester" gpa="2.5">Bachelor of Arts</Degree>
+  </Degrees>
+  <Medical>
+    <Blood>BO</Blood>
+    <Height>122</Height>
+    <Allergies>NONE</Allergies>
+    <Perscription>Benicar x30 monthly</Perscription>
+    <Notes>High blood pressure due to excess salt intake. benicar perscribed, though patient admitted to having issues remembering to take it. Monitor closely.</Notes>
+  </Medical>
+  <Notes>
+  </Notes>
+</Person>
