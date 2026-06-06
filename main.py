@@ -6,12 +6,13 @@ from tkinter import *
 from tkinter import filedialog, messagebox, simpledialog
 from tkinter.ttk import *
 import xml.etree.ElementTree as ET
+import threading
 import string
 import os
 
 
 #--------------变量控制区-----------------
-version = 1.05
+version = 1.06
 debug = False
 #-----------------------------------------
 
@@ -50,37 +51,36 @@ def brute_force_passcode(encrypted_encoded: str, encrypted_content: str):
     if not encrypted_encoded.strip():
         return None
     nums_enc = [int(x) for x in encrypted_encoded.split()]
-    n0_enc = nums_enc[0]
-    for pc in range(0x10000):
-        if (n0_enc - OFFSET_BASE - pc) % MULTIPLIER != 0:
-            continue
-        if (n0_enc - OFFSET_BASE - pc) // MULTIPLIER != ord('E'):
-            continue
-        dec_enc = []
-        ok = True
-        for n in nums_enc[1:]:
+    if not nums_enc:
+        return None
+
+    # 利用密文第一个数字直接反推 passcode
+    MAGIC = ord('E') * MULTIPLIER + OFFSET_BASE  # 158485
+    pc = (nums_enc[0] - MAGIC) & 0xFFFF
+
+    # 验证整个 "ENCODED" 是否能正确解密
+    dec_chars = []
+    for n in nums_enc:
+        off = OFFSET_BASE + pc
+        if (n - off) % MULTIPLIER != 0:
+            return None
+        ch = (n - off) // MULTIPLIER
+        if not (0 <= ch <= 0x10FFFF):
+            return None
+        dec_chars.append(chr(ch))
+
+    if ''.join(dec_chars) != "ENCODED":
+        return None
+
+    # 如果提供了内容段，也验证该 passcode 对其有效
+    if encrypted_content.strip():
+        nums_con = [int(x) for x in encrypted_content.split()]
+        for n in nums_con:
             off = OFFSET_BASE + pc
             if (n - off) % MULTIPLIER != 0:
-                ok = False
-                break
-            ch = (n - off) // MULTIPLIER
-            if ch < 0 or ch > 0x10FFFF:
-                ok = False
-                break
-            dec_enc.append(ch)
-        if not ok or len(dec_enc) != 6 or ''.join(chr(c) for c in dec_enc) != "NCODED":
-            continue
-        if encrypted_content.strip():
-            nums_con = [int(x) for x in encrypted_content.split()]
-            for n in nums_con:
-                off = OFFSET_BASE + pc
-                if (n - off) % MULTIPLIER != 0:
-                    ok = False
-                    break
-            if not ok:
-                continue
-        return pc
-    return None
+                return None
+
+    return pc
 
 def decrypt_layer(data: str, passcode: int):
     lines = [line for line in re.split(r'\r?\n', data) if line.strip() != '']
@@ -213,13 +213,13 @@ class WinGUI(Tk):
 
     def __win(self):
         self.title("Hacknet存档读取工具_v" + str(version))
-        width = 900      # 加宽以容纳新列
+        width = 900
         height = 450
         screenwidth = self.winfo_screenwidth()
         screenheight = self.winfo_screenheight()
         geometry = '%dx%d+%d+%d' % (width, height, (screenwidth - width) / 2, (screenheight - height) / 2)
         self.geometry(geometry)
-        self.minsize(width=800, height=400)   # 允许用户缩小但不能太小
+        self.minsize(width=800, height=400)
 
     def scrollbar_autohide(self, vbar, hbar, widget):
         def show():
@@ -260,9 +260,8 @@ class WinGUI(Tk):
         columns = {
             "IP": 120, "节点名称": 130, "解锁状态": 60, "管理员": 60,
             "管理员密码": 100, "防火墙密码": 100, "开放端口": 100,
-            "追踪时间": 70, "代理时间": 70, "破解端口数": 70        # 代理时间放在追踪时间后
+            "追踪时间": 70, "代理时间": 70, "破解端口数": 70
         }
-        # 容器 Frame，填满整个窗口
         table_frame = Frame(parent)
         table_frame.pack(fill=BOTH, expand=True)
 
@@ -271,23 +270,18 @@ class WinGUI(Tk):
             tk_table.heading(text, text=text, anchor='center')
             tk_table.column(text, anchor='center', width=width, minwidth=40, stretch=True)
 
-        # 垂直滚动条
         vsb = Scrollbar(table_frame, orient="vertical", command=tk_table.yview)
-        # 水平滚动条
         hsb = Scrollbar(table_frame, orient="horizontal", command=tk_table.xview)
 
         tk_table.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
 
-        # 布局：表格占主要区域，滚动条在边缘
         tk_table.grid(row=0, column=0, sticky="nsew")
         vsb.grid(row=0, column=1, sticky="ns")
         hsb.grid(row=1, column=0, sticky="ew")
 
-        # 让表格所在的行和列可以拉伸
         table_frame.grid_rowconfigure(0, weight=1)
         table_frame.grid_columnconfigure(0, weight=1)
 
-        # 绑定自动隐藏效果（已有方法）
         self.scrollbar_autohide(vsb, hsb, tk_table)
 
         return tk_table
@@ -449,7 +443,6 @@ THEME_NAMES = {
 DEFAULT_THEME = "HacknetTeal"
 
 # ==================== 守护进程定义 ====================
-# 守护进程类型：(标签名, 属性列表)
 DAEMON_DEFS = {
     "无": (None, []),
     "MailServer": ("MailServer", ["name", "color"]),
@@ -564,7 +557,6 @@ class Controller:
         return text
 
     def encode_hacknet_markers(self, text: str) -> str:
-        """将普通字符转换为 Hacknet 存档标记"""
         if not text:
             return text
         replacements = {
@@ -694,11 +686,28 @@ class Controller:
                 break
         return first_header, first_ip, final_suffix, final_content, passcodes
 
+    def brute_force_password(self, target_passcode, max_length=6):
+        """随机尝试字母数字组合，返回一个 hash 低 16 位等于 target_passcode 的密码"""
+        chars = string.ascii_letters + string.digits
+        while True:
+            length = random.randint(1, max_length)
+            candidate = ''.join(random.choices(chars, k=length))
+            if (dotnet_fx40_string_hash(candidate) & 0xFFFF) == target_passcode:
+                return candidate
+
+    def _find_and_show_password(self, passcode, parent_win):
+        password = self.brute_force_password(passcode)
+        parent_win.after(0, lambda: messagebox.showinfo(
+            "密码碰撞完成",
+            f"找到可用密码：\n{password}\n",
+            parent=parent_win
+        ))
+
     # ---------- 存档显示 ----------
     def showComputer(self):
         hacknet_save = self.xml_root
         if hacknet_save is None:
-            messagebox.showerror("错误", "存档格式不正确")
+            messagebox.showerror("错误", "存档格式不正确", parent=self.ui)
             return
         game_user = hacknet_save.get('Username')
         if not game_user:
@@ -747,40 +756,44 @@ class Controller:
         try:
             self.xml_root = read_file(self.xml_file)
         except Exception as e:
-            messagebox.showinfo(message="存档不合法！请检查存档: " + str(e))
+            messagebox.showinfo(message="存档不合法！请检查存档: " + str(e), parent=self.ui)
             return
         self.showComputer()
 
     def saveFile(self):
         if self.xml_root is None:
-            messagebox.showinfo(message="请先打开一个存档！")
+            messagebox.showinfo(message="请先打开一个存档！", parent=self.ui)
             return
-        if messagebox.askyesno("确认", "你确定要覆盖保存存档吗？此行为不可逆"):
+        if messagebox.askyesno("确认", "你确定要覆盖保存存档吗？此行为不可逆", parent=self.ui):
             save_file(self.xml_root, self.xml_file)
-            messagebox.showinfo(message="存档保存成功！")
+            messagebox.showinfo(message="存档保存成功！", parent=self.ui)
 
     def saveAnotherFile(self):
         if self.xml_root is None:
-            messagebox.showinfo(message="请先打开一个存档！")
+            messagebox.showinfo(message="请先打开一个存档！", parent=self.ui)
             return
         r = filedialog.asksaveasfilename(title='保存存档到', defaultextension=".xml", filetypes=[('存档文件', '*.xml')])
         if r:
             save_file(self.xml_root, r)
-            messagebox.showinfo(message="存档保存成功！")
+            messagebox.showinfo(message="存档保存成功！", parent=self.ui)
 
     def quitApp(self):
-        if messagebox.askyesno("提示", "确定关闭软件？"):
+        if messagebox.askyesno("提示", "确定关闭软件？", parent=self.ui):
             os._exit(0)
 
     # ---------- 特殊功能 ----------
     def unlockAllComputer(self):
-        if self.xml_root is None: return messagebox.showinfo(message="请先打开一个存档！")
+        if self.xml_root is None: 
+            messagebox.showinfo(message="请先打开一个存档！", parent=self.ui)
+            return
         self.xml_root.find('NetworkMap').find("visible").text = ' '.join(str(i) for i in range(self.computer_num))
         self.showComputer()
-        messagebox.showinfo(message="全节点解锁获取完成！")
+        messagebox.showinfo(message="全节点解锁获取完成！", parent=self.ui)
 
     def getAllComputerAdmin(self):
-        if self.xml_root is None: return messagebox.showinfo(message="请先打开一个存档！")
+        if self.xml_root is None: 
+            messagebox.showinfo(message="请先打开一个存档！", parent=self.ui)
+            return
         gamer_ip = self.xml_root.find('.//NetworkMap/network/computer[1]').get('ip')
         for computer in self.xml_root.findall('.//computer'):
             sec = computer.find('security')
@@ -789,10 +802,12 @@ class Controller:
             if users is not None:
                 for u in users.findall('user'): u.set('known', 'True')
         self.showComputer()
-        messagebox.showinfo(message="管理员权限获取完成！")
+        messagebox.showinfo(message="管理员权限获取完成！", parent=self.ui)
 
     def makeMyComputerUnbreakable(self):
-        if self.xml_root is None: return messagebox.showinfo(message="请先打开一个存档！")
+        if self.xml_root is None: 
+            messagebox.showinfo(message="请先打开一个存档！", parent=self.ui)
+            return
         player = self.get_player_computer()
         sec = player.find('security')
         if sec is None: sec = ET.SubElement(player, 'security')
@@ -807,23 +822,23 @@ class Controller:
         ports = player.find('portsOpen')
         if ports is not None: ports.text = "80 25 21 22 1433 3659 104 443 192 6881 32 9418 3724 211 554"
         self.showComputer()
-        messagebox.showinfo(message="你的电脑坚不可摧！[滑稽]")
+        messagebox.showinfo(message="你的电脑坚不可摧！[滑稽]", parent=self.ui)
 
     def getAllExeFiles(self):
         if self.xml_root is None:
-            messagebox.showinfo(message="请先打开一个存档！")
+            messagebox.showinfo(message="请先打开一个存档！", parent=self.ui)
             return
         player = self.get_player_computer()
         if player is None:
-            messagebox.showerror("错误", "未找到玩家计算机")
+            messagebox.showerror("错误", "未找到玩家计算机", parent=self.ui)
             return
         filesystem = player.find('filesystem')
         if filesystem is None:
-            messagebox.showerror("错误", "玩家计算机没有文件系统")
+            messagebox.showerror("错误", "玩家计算机没有文件系统", parent=self.ui)
             return
         root = filesystem.find("folder[@name='/']")
         if root is None:
-            messagebox.showerror("错误", "玩家计算机没有根文件夹")
+            messagebox.showerror("错误", "玩家计算机没有根文件夹", parent=self.ui)
             return
         bin_folder = root.find("folder[@name='bin']")
         if bin_folder is None:
@@ -842,27 +857,24 @@ class Controller:
             file_elem.text = data
             file_elem.tail = '\n'
             added_count += 1
-        messagebox.showinfo("完成", f"已添加 {added_count} 个文件，跳过已存在的 {skipped_count} 个。\n请手动保存存档以生效。")
+        messagebox.showinfo("完成", f"已添加 {added_count} 个文件，跳过已存在的 {skipped_count} 个。\n请手动保存存档以生效。", parent=self.ui)
 
     # ---------- 右键菜单与编辑 ----------
     def show_context_menu(self, event):
         item = self.ui.tk_table_m9v8rfji.identify_row(event.y)
         if item:
             self.ui.tk_table_m9v8rfji.selection_set(item)
-            # 获取该行 IP
             values = self.ui.tk_table_m9v8rfji.item(item, 'values')
             if not values:
                 return
             ip = values[0]
 
-            # 查找对应的 computer 元素
             computer_elem = None
             for comp in self.xml_root.findall('.//computer'):
                 if comp.get('ip') == ip:
                     computer_elem = comp
                     break
 
-            # 根据 editor 属性判断是否可删除
             can_delete = (computer_elem is not None and computer_elem.get('editor') == 'true')
 
             menu = Menu(self.ui, tearoff=False)
@@ -873,7 +885,6 @@ class Controller:
             menu.post(event.x_root, event.y_root)
 
     def deleteComputer(self, ip):
-        """删除指定 IP 的节点（仅限 editor="true" 的自定义节点）"""
         if self.xml_root is None:
             return
 
@@ -884,45 +895,41 @@ class Controller:
                 break
 
         if computer_elem is None:
-            messagebox.showerror("错误", "未找到该节点")
+            messagebox.showerror("错误", "未找到该节点", parent=self.ui)
             return
         if computer_elem.get('editor') != 'true':
-            messagebox.showwarning("提示", "该节点不是自定义节点，无法删除")
+            messagebox.showwarning("提示", "该节点不是自定义节点，无法删除", parent=self.ui)
             return
         if computer_elem.get('spec') == 'player':
-            messagebox.showwarning("提示", "不能删除玩家电脑")
+            messagebox.showwarning("提示", "不能删除玩家电脑", parent=self.ui)
             return
 
-        if not messagebox.askyesno("确认删除", f"确定要删除节点 {computer_elem.get('name')} ({ip}) 吗？"):
+        if not messagebox.askyesno("确认删除", f"确定要删除节点 {computer_elem.get('name')} ({ip}) 吗？", parent=self.ui):
             return
 
-        # 获取被删除节点的原始索引（删除前的索引）
         all_comps = self.xml_root.findall('.//computer')
         old_index = list(all_comps).index(computer_elem)
 
-        # 从 XML 中移除
         network = self.xml_root.find('.//network')
         if network is not None:
             network.remove(computer_elem)
 
-        # 更新 visible 列表：移除被删除的索引，并将大于该索引的值减1
         visible_elem = self.xml_root.find('.//visible')
         if visible_elem is not None and visible_elem.text:
             visible_list = [int(x) for x in visible_elem.text.split()]
             new_visible = []
             for idx in visible_list:
                 if idx == old_index:
-                    continue       # 移除该索引
+                    continue
                 elif idx > old_index:
-                    new_visible.append(idx - 1)   # 后续索引前移
+                    new_visible.append(idx - 1)
                 else:
                     new_visible.append(idx)
             visible_elem.text = ' '.join(map(str, new_visible))
 
-        # 更新计数
         self.computer_num = len(self.xml_root.findall('.//computer'))
         self.showComputer()
-        messagebox.showinfo("成功", "节点已删除，请手动保存存档。")   
+        messagebox.showinfo("成功", "节点已删除，请手动保存存档。", parent=self.ui)   
 
     def edit_row(self):
         tree = self.ui.tk_table_m9v8rfji
@@ -949,7 +956,7 @@ class Controller:
                 if num < len(computers):
                     computer = computers[num]
                 else:
-                    messagebox.showerror("错误", "无法找到对应的计算机节点")
+                    messagebox.showerror("错误", "无法找到对应的计算机节点", parent=window)
                     return
 
             computer.set('ip', new_vals[0])
@@ -975,7 +982,6 @@ class Controller:
             sec = computer.find('security')
             if sec is not None:
                 col_names = tree["columns"]
-                # 定义需要动态处理的属性映射
                 attr_map = {
                     "追踪时间": "traceTime",
                     "破解端口数": "portsToCrack",
@@ -986,7 +992,6 @@ class Controller:
                         attr_name = attr_map[col_name]
                         new_val = new_vals[idx].strip()
                         if new_val == "":
-                            # 如果原本有属性则删除
                             if sec.get(attr_name) is not None:
                                 del sec.attrib[attr_name]
                         else:
@@ -1104,7 +1109,6 @@ class Controller:
             elem = self._find_fs_element_by_path(temp_computer_elem, current_editing_path)
             if elem is not None and elem.tag == 'file':
                 new_content = text.get("1.0", END).rstrip('\n')
-                # 将编辑器中的正常字符转回 Hacknet 标记，以便正确保存到存档
                 encoded_content = self.encode_hacknet_markers(new_content)
                 elem.text = '\n' + encoded_content if encoded_content else None
                 update_save_menu()
@@ -1293,7 +1297,7 @@ class Controller:
             folder_elem = self._find_folder_by_path(temp_computer_elem, parent_path)
             if folder_elem is None: return
             if folder_elem.find(f"file[@name='{name}']") is not None:
-                messagebox.showwarning("错误", "文件已存在。")
+                messagebox.showwarning("错误", "文件已存在。", parent=win)
                 return
             file_elem = ET.SubElement(folder_elem, 'file', {'name': name})
             file_elem.tail = '\n'
@@ -1308,7 +1312,7 @@ class Controller:
             folder_elem = self._find_folder_by_path(temp_computer_elem, parent_path)
             if folder_elem is None: return
             if folder_elem.find(f"folder[@name='{name}']") is not None:
-                messagebox.showwarning("错误", "文件夹已存在。")
+                messagebox.showwarning("错误", "文件夹已存在。", parent=win)
                 return
             new_folder = ET.SubElement(folder_elem, 'folder', {'name': name})
             new_folder.tail = '\n'
@@ -1327,7 +1331,7 @@ class Controller:
             if parent is not None:
                 tag = elem.tag
                 if parent.find(f"{tag}[@name='{new_name}']") is not None:
-                    messagebox.showwarning("错误", "名称已存在。")
+                    messagebox.showwarning("错误", "名称已存在。", parent=win)
                     return
             elem.set('name', new_name)
             update_save_menu()
@@ -1394,7 +1398,7 @@ class Controller:
 
         def on_close():
             if check_modified():
-                answer = messagebox.askyesnocancel("未保存修改", "有未保存的修改，是否保存？")
+                answer = messagebox.askyesnocancel("未保存修改", "有未保存的修改，是否保存？", parent=win)
                 if answer is None:
                     return
                 elif answer:
@@ -1550,7 +1554,7 @@ class Controller:
     # ==================== 内存转储查看器 ====================
     def showMemoryDumps(self):
         if self.xml_root is None:
-            messagebox.showinfo(message="请先打开一个存档！")
+            messagebox.showinfo(message="请先打开一个存档！", parent=self.ui)
             return
         dumps = []
         for computer in self.xml_root.findall('.//computer'):
@@ -1559,7 +1563,7 @@ class Controller:
                 name = computer.get('name')
                 dumps.append((ip, name, computer))
         if not dumps:
-            messagebox.showinfo(message="存档中没有包含内存转储的节点！")
+            messagebox.showinfo(message="存档中没有包含内存转储的节点！", parent=self.ui)
             return
         window = Toplevel(self.ui)
         window.title("内存转储查看器")
@@ -1589,8 +1593,8 @@ class Controller:
             result_win.geometry("800x600")
             menubar = Menu(result_win)
             file_menu = Menu(menubar, tearoff=False)
-            file_menu.add_command(label="保存到玩家转储目录", command=lambda: self._save_to_memdump(computer, name))
-            file_menu.add_command(label="保存到本地", command=lambda: self._save_memory_local(name, mem_content))
+            file_menu.add_command(label="保存到玩家转储目录", command=lambda: self._save_to_memdump(computer, name, result_win))
+            file_menu.add_command(label="保存到本地", command=lambda: self._save_memory_local(name, mem_content, result_win))
             menubar.add_cascade(label="文件", menu=file_menu)
             result_win.config(menu=menubar)
             text = Text(result_win, wrap=WORD)
@@ -1600,17 +1604,17 @@ class Controller:
 
         tree.bind('<Double-1>', on_dbl_click)
 
-    def _save_to_memdump(self, computer, display_name):
+    def _save_to_memdump(self, computer, display_name, parent_win):
         try:
             mem_content = self.encrypt_memory_dump(computer)
-            self.save_memdump(computer, mem_content)
+            self.save_memdump(computer, mem_content, parent_win)
         except Exception as e:
-            messagebox.showerror("错误", f"生成内存转储文件失败：{str(e)}")
+            messagebox.showerror("错误", f"生成内存转储文件失败：{str(e)}", parent=parent_win)
 
-    def save_memdump(self, computer, mem_content):
+    def save_memdump(self, computer, mem_content, parent_win=None):
         player = self.get_player_computer()
         if player is None:
-            messagebox.showerror("错误", "未找到玩家计算机")
+            messagebox.showerror("错误", "未找到玩家计算机", parent=parent_win)
             return
         fs = player.find('filesystem')
         if fs is None: return
@@ -1629,26 +1633,26 @@ class Controller:
         filename = safe_name.replace(' ', '_').lower() + "_dump.mem"
         existing = memdumps.find(f"file[@name='{filename}']")
         if existing is not None:
-            if not messagebox.askyesno("文件已存在", f"文件 {filename} 已存在于 /home/MemDumps，是否覆盖？"):
+            if not messagebox.askyesno("文件已存在", f"文件 {filename} 已存在于 /home/MemDumps，是否覆盖？", parent=parent_win):
                 return
             memdumps.remove(existing)
         file_elem = ET.SubElement(memdumps, 'file', {'name': filename})
         file_elem.text = mem_content
         file_elem.tail = '\n'
         self._sort_folder_children(memdumps)
-        messagebox.showinfo("成功", f"内存转储已保存到玩家 /home/MemDumps/{filename}。\n请手动“覆盖保存”以写入存档。")
+        messagebox.showinfo("成功", f"内存转储已保存到玩家 /home/MemDumps/{filename}。\n请手动“覆盖保存”以写入存档。", parent=parent_win)
 
-    def _save_memory_local(self, name, content):
+    def _save_memory_local(self, name, content, parent_win=None):
         path = filedialog.asksaveasfilename(title="保存内存转储", initialfile=f"{name}_memory.txt")
         if path:
             with open(path, 'w', encoding='utf-8') as f:
                 f.write(content)
-            messagebox.showinfo("成功", f"内存转储已保存到 {path}")
+            messagebox.showinfo("成功", f"内存转储已保存到 {path}", parent=parent_win)
 
     # ==================== DEC 文件查看器 ====================
     def showDECFiles(self):
         if self.xml_root is None:
-            messagebox.showinfo(message="请先打开一个存档！")
+            messagebox.showinfo(message="请先打开一个存档！", parent=self.ui)
             return
         dec_files = []
         for computer in self.xml_root.findall('.//computer'):
@@ -1660,7 +1664,7 @@ class Controller:
                 if root_folder is not None:
                     collect_dec_files_from_folder(root_folder, "", ip, name, computer, dec_files)
         if not dec_files:
-            messagebox.showinfo(message="存档中没有找到 .dec 文件！")
+            messagebox.showinfo(message="存档中没有找到 .dec 文件！", parent=self.ui)
             return
         window = Toplevel(self.ui)
         window.title("DEC 文件查看器")
@@ -1690,8 +1694,9 @@ class Controller:
                 result_win.geometry("800x600")
                 menubar = Menu(result_win)
                 file_menu = Menu(menubar, tearoff=False)
-                file_menu.add_command(label="保存到玩家/home目录", command=lambda: self.save_to_home(final_name, final))
-                file_menu.add_command(label="保存到本地", command=lambda: self.save_to_local(final_name, final))
+                file_menu.add_command(label="保存到玩家/home目录", command=lambda: self.save_to_home(final_name, final, result_win))
+                file_menu.add_command(label="保存到本地", command=lambda: self.save_to_local(final_name, final, result_win))
+                file_menu.add_command(label="计算有效密码",command=lambda: threading.Thread(target=self._find_and_show_password,args=(passcodes[0], result_win),daemon=True).start())
                 menubar.add_cascade(label="文件", menu=file_menu)
                 result_win.config(menu=menubar)
                 final = self.decode_hacknet_markers(final)
@@ -1723,7 +1728,7 @@ class Controller:
                     hdr, ip, suffix, final, passcodes = self.decrypt_all_layers_with_password(content, password)
                     show_result(hdr, ip, suffix, final, passcodes)
                 except Exception as e:
-                    messagebox.showerror("解密失败", str(e))
+                    messagebox.showerror("解密失败", str(e), parent=window)
 
             def brute():
                 dlg.destroy()
@@ -1731,7 +1736,7 @@ class Controller:
                     hdr, ip, suffix, final, passcodes = decrypt_all_layers(content)
                     show_result(hdr, ip, suffix, final, passcodes)
                 except Exception as e:
-                    messagebox.showerror("解密失败", str(e))
+                    messagebox.showerror("解密失败", str(e), parent=window)
 
             btn_frame = Frame(dlg)
             btn_frame.pack(pady=5)
@@ -1759,7 +1764,7 @@ class Controller:
                 plain_text.delete("1.0", END)
                 plain_text.insert("1.0", content)
             except Exception as e:
-                messagebox.showerror("打开失败", str(e))
+                messagebox.showerror("打开失败", str(e), parent=win)
 
         def open_cipher_file():
             path = filedialog.askopenfilename(title="打开密文文件", filetypes=[("DEC 文件", "*.dec"), ("所有文件", "*.*")])
@@ -1770,7 +1775,7 @@ class Controller:
                 cipher_text.delete("1.0", END)
                 cipher_text.insert("1.0", content)
             except Exception as e:
-                messagebox.showerror("打开失败", str(e))
+                messagebox.showerror("打开失败", str(e), parent=win)
 
         def save_plain_file():
             content = plain_text.get("1.0", END).strip()
@@ -1782,7 +1787,7 @@ class Controller:
                 with open(path, 'w', encoding='utf-8') as f:
                     f.write(content)
             except Exception as e:
-                messagebox.showerror("保存失败", str(e))
+                messagebox.showerror("保存失败", str(e), parent=win)
 
         def save_cipher_file():
             content = cipher_text.get("1.0", END).strip()
@@ -1794,7 +1799,7 @@ class Controller:
                 with open(path, 'w', encoding='utf-8') as f:
                     f.write(content)
             except Exception as e:
-                messagebox.showerror("保存失败", str(e))
+                messagebox.showerror("保存失败", str(e), parent=win)
 
         file_menu.add_command(label="打开 txt 明文", command=open_plain_file)
         file_menu.add_command(label="打开 dec 密文", command=open_cipher_file)
@@ -1846,21 +1851,21 @@ class Controller:
                 cipher_text.delete("1.0", END)
                 cipher_text.insert("1.0", cipher)
             except Exception as e:
-                messagebox.showerror("加密失败", str(e))
+                messagebox.showerror("加密失败", str(e), parent=win)
 
         def do_decrypt():
             cipher = cipher_text.get("1.0", END).strip()
             if not cipher.startswith("#DEC_ENC::"):
-                messagebox.showerror("格式错误", "密文必须以 #DEC_ENC:: 开头")
+                messagebox.showerror("格式错误", "密文必须以 #DEC_ENC:: 开头", parent=win)
                 return
             lines = cipher.replace('\r\n', '\n').split('\n')
             non_empty = [l for l in lines if l.strip() != '']
             if len(non_empty) < 2:
-                messagebox.showerror("格式错误", "密文必须至少包含头部和内容两行")
+                messagebox.showerror("格式错误", "密文必须至少包含头部和内容两行", parent=win)
                 return
             header_fields = non_empty[0].split("::")
             if len(header_fields) < 4:
-                messagebox.showerror("格式错误", "密文头部字段不足")
+                messagebox.showerror("格式错误", "密文头部字段不足", parent=win)
                 return
             password = pwd_var.get()
             passcode = get_passcode(password) if password else EMPTY_PASSCODE
@@ -1871,7 +1876,7 @@ class Controller:
                 plain_text.delete("1.0", END)
                 plain_text.insert("1.0", content)
             except Exception as e:
-                messagebox.showerror("解密失败", str(e))
+                messagebox.showerror("解密失败", str(e), parent=win)
 
         tk.Button(btn_container, text="加密 →", command=do_encrypt, width=10).pack(pady=3)
         tk.Button(btn_container, text="← 解密", command=do_decrypt, width=10).pack(pady=3)
@@ -1909,10 +1914,10 @@ class Controller:
         pwd_var = StringVar()
         Entry(pwd_frame, textvariable=pwd_var).pack(side=LEFT, expand=True, fill=X)
 
-    def save_to_home(self, filename, content):
+    def save_to_home(self, filename, content, parent_win=None):
         player = self.get_player_computer()
         if player is None:
-            messagebox.showerror("错误", "未找到玩家计算机")
+            messagebox.showerror("错误", "未找到玩家计算机", parent=parent_win)
             return
         fs = player.find('filesystem')
         if fs is None: return
@@ -1923,20 +1928,20 @@ class Controller:
             home = ET.SubElement(root, 'folder', {'name': 'home'})
         existing = home.find(f"file[@name='{filename}']")
         if existing is not None:
-            if not messagebox.askyesno("文件已存在", "覆盖吗？"):
+            if not messagebox.askyesno("文件已存在", "覆盖吗？", parent=parent_win):
                 return
             home.remove(existing)
         fe = ET.SubElement(home, 'file', {'name': filename})
         fe.text = content
         fe.tail = '\n'
-        messagebox.showinfo("成功", "文件已保存到玩家 /home。\n请手动“覆盖保存”以写入存档。")
+        messagebox.showinfo("成功", "文件已保存到玩家 /home。\n请手动“覆盖保存”以写入存档。", parent=parent_win)
 
-    def save_to_local(self, filename, content):
+    def save_to_local(self, filename, content, parent_win=None):
         path = filedialog.asksaveasfilename(title="保存到本地", initialfile=filename)
         if path:
             with open(path, 'w', encoding='utf-8') as f:
                 f.write(content)
-            messagebox.showinfo("成功", f"文件已保存到 {path}")
+            messagebox.showinfo("成功", f"文件已保存到 {path}", parent=parent_win)
 
 
     # ==================== 节点创建 ====================
@@ -1957,7 +1962,6 @@ class Controller:
         return ''.join(bin(b)[2:] for b in random_bytes)
 
     def _get_daemon_resource(self, filename):
-        """读取 DaemonResources 目录下的资源文件，若不存在则返回降级文本"""
         res_path = os.path.join(os.path.dirname(__file__), "DaemonResources", filename)
         if os.path.exists(res_path):
             with open(res_path, 'r', encoding='utf-8') as f:
@@ -1965,7 +1969,6 @@ class Controller:
         return f"[Missing resource: {filename}]"
 
     def _load_people_from_xml(self):
-        """解析 DaemonResources/People/ 下的所有人物 XML，返回 dict {id: data}"""
         people_dir = os.path.join(os.path.dirname(__file__), "DaemonResources", "People")
         if not os.path.isdir(people_dir):
             return {}
@@ -2028,7 +2031,6 @@ class Controller:
         return people
 
     def _format_medical_record(self, person):
-        """将人物数据格式化为 MedicalDatabase 的 .rec 文件内容"""
         first = person['firstName']
         last = person['lastName']
         gender = 'male' if person['isMale'] else 'female'
@@ -2049,14 +2051,12 @@ class Controller:
         return f"{first}\n-----------------\n{last}\n-----------------\n{gender}\n-----------------\n{dob}\n-----------------\n{record}"
 
     def _format_academic_record(self, person):
-        """将人物数据格式化为 AcademicDatabase 的条目文本"""
         lines = [f"Name: {person['firstName']} {person['lastName']}"]
         for deg in person['degrees']:
             lines.append(f"{deg['name']} | {deg['uni']} | GPA: {deg['gpa']}")
         return '\n'.join(lines)
 
     def _parse_deathrow_records(self):
-        """解析 DeathRow.txt + DeathRowSpecials.txt，返回囚犯记录列表"""
         res_dir = os.path.join(os.path.dirname(__file__), "DaemonResources")
         text = ""
         for fname in ["DeathRow.txt", "DeathRowSpecials.txt"]:
@@ -2081,7 +2081,6 @@ class Controller:
         return records
 
     def _add_daemon_filesystems(self, comp, daemon_key, daemon_attrs, admin_pass):
-        """根据守护进程类型，向文件系统中添加所需的文件夹和初始文件"""
         root = comp.find('filesystem/folder[@name="/"]')
         if root is None:
             return
@@ -2103,7 +2102,6 @@ class Controller:
 
         tag = DAEMON_DEFS[daemon_key][0]
 
-        # ---------- AcademicDatabse ----------
         if tag == "AcademicDatabse":
             ad = ensure_folder("academic_data")
             ec = ensure_folder("entry_cache", parent=ad)
@@ -2116,7 +2114,6 @@ class Controller:
                         if ec.find(f"file[@name='{fname}']") is None:
                             add_file(ec, fname, self._format_academic_record(person))
 
-        # ---------- AircraftDaemon ----------
         elif tag == "AircraftDaemon":
             fs = ensure_folder("FlightSystems")
             dll_data = self._generate_binary_string(500)
@@ -2124,21 +2121,17 @@ class Controller:
             for name in ["InFlightWifiRouter.dll", "Scheduler.dll", "EntertainmentServices.dll", "AnnouncementsSys.dll"]:
                 add_file(fs, name, self._generate_binary_string(200))
 
-        # ---------- DatabaseDaemon (跳过 VehicleInfo 和 NeopalsAccount) ----------
         elif tag == "DatabaseDaemon":
             dtype = (daemon_attrs or {}).get('DataType', '')
             if dtype.endswith("VehicleInfo") or dtype.endswith("NeopalsAccount"):
-                # 无法还原，仅创建空文件夹
                 folder_name = daemon_attrs.get('Foldername', 'Database')
                 ensure_folder(folder_name)
             else:
-                # 默认行为：创建文件夹并生成几个示例记录
                 folder_name = daemon_attrs.get('Foldername', 'Database')
                 db = ensure_folder(folder_name)
                 for i in range(3):
                     add_file(db, f"record_{i}.rec", f"Sample record {i}")
 
-        # ---------- DeathRowDatabase ----------
         elif tag == "DeathRowDatabase":
             dr = ensure_folder("dr_database")
             rec = ensure_folder("records", parent=dr)
@@ -2151,7 +2144,6 @@ class Controller:
                         data = entry['data'].replace('#', '#\n')
                         add_file(rec, fname, data)
 
-        # ---------- HeartMonitor ----------
         elif tag == "HeartMonitor":
             kbt = ensure_folder("KBT_Pacemaker")
             active = ensure_folder("Active", parent=kbt)
@@ -2159,27 +2151,23 @@ class Controller:
             add_file(kbt, "KBT_Firmware_v1.2.dll", fw)
             add_file(active, "LiveFirmware.dll", fw)
 
-        # ---------- IRCDaemon ----------
         elif tag == "IRCDaemon":
             irc = ensure_folder("IRC")
             runtime = ensure_folder("runtime", parent=irc)
             cfg = f"IRC Server\nRequireAuth: false\n255,255,255\n"
             add_file(irc, "users.cfg", cfg)
 
-        # ---------- ISPDaemon ----------
         elif tag == "ispSystem":
             home = root.find("folder[@name='home']")
             if home is not None and home.find("file[@name='ISP_About_Message.txt']") is None:
                 add_file(home, "ISP_About_Message.txt", self._get_daemon_resource("ISPAbout.txt"))
 
-        # ---------- LogoDaemon ----------
         elif tag == "LogoDaemon":
             if daemon_attrs and daemon_attrs.get('BodyText'):
                 sysf = root.find("folder[@name='sys']")
                 if sysf is not None:
                     add_file(sysf, "DisplayText.txt", daemon_attrs['BodyText'])
 
-        # ---------- MedicalDatabase ----------
         elif tag == "MedicalDatabase":
             med = ensure_folder("Medical")
             people = self._load_people_from_xml()
@@ -2189,7 +2177,6 @@ class Controller:
                     if med.find(f"file[@name='{fname}']") is None:
                         add_file(med, fname, self._format_medical_record(person))
             else:
-                # 降级样例
                 for last, first, gender, dob, record in [
                     ("Smith", "John", "male", "1985-03-12", "Blood Type: O+\nAllergies: Penicillin"),
                     ("Doe", "Jane", "female", "1990-07-23", "Blood Type: A-\nAllergies: None"),
@@ -2201,12 +2188,10 @@ class Controller:
             if home is not None and home.find("file[@name='MedicalDatabaseInfo.txt']") is None:
                 add_file(home, "MedicalDatabaseInfo.txt", self._get_daemon_resource("MedicalDatabaseInfo.txt"))
 
-        # ---------- MessageBoard ----------
         elif tag == "MessageBoard":
             ib = ensure_folder("ImageBoard")
             ensure_folder("Threads", parent=ib)
 
-        # ---------- MissionHubServer ----------
         elif tag == "MissionHubServer":
             hub = ensure_folder("ContractHub")
             contracts = ensure_folder("Contracts", parent=hub)
@@ -2215,21 +2200,18 @@ class Controller:
             ensure_folder("Users", parent=hub)
             add_file(hub, "settings.sys", "ThemeColor = 0,255,255\n")
 
-        # ---------- MissionListingServer ----------
         elif tag == "MissionListingServer":
             msgb = ensure_folder("MsgBoard")
             ensure_folder("listings", parent=msgb)
             ensure_folder("closed", parent=msgb)
             add_file(msgb, "config.sys", "// Mission Listing Server Configuration\n")
 
-        # ---------- PointClicker ----------
         elif tag == "PointClicker":
             pc = ensure_folder("PointClicker")
             saves = ensure_folder("Saves", parent=pc)
             add_file(pc, "config.ini", self._generate_binary_string(1000))
             add_file(pc, "IMPORTANT_README_DONT_CRASH.txt",
                      "IMPORTANT : NEVER DELETE OR RE-NAME \"config.ini\"\n IT IS SYSTEM CRITICAL! Removing it causes instant crash. DO NOT TEST THIS")
-            # 为一些预设用户生成存档
             people = self._load_people_from_xml()
             preset_users = ["Mengsk", "Bit"] + [p['handle'] for p in list(people.values())[:5]]
             for i, user in enumerate(preset_users):
@@ -2240,14 +2222,12 @@ class Controller:
                 save_str = f"{points}\n{story}\n" + ','.join(str(c) for c in upgrades)
                 add_file(saves, f"{user}.pcsav", save_str)
 
-        # ---------- UploadServerDaemon ----------
         elif tag == "UploadServerDaemon":
             folder_name = daemon_attrs.get('foldername', 'Drop') if daemon_attrs else 'Drop'
             up = ensure_folder(folder_name)
             ensure_folder("Uploads", parent=up)
             add_file(up, "Server_Message.txt", self._get_daemon_resource("UploadServerText.txt"))
 
-        # ---------- WebServer / OnlineWebServer ----------
         elif tag in ("WebServer", "OnlineWebServerDaemon"):
             web = ensure_folder("web")
             if web.find("file[@name='index.html']") is None:
@@ -2257,7 +2237,6 @@ class Controller:
                 encoded_html = self.encode_hacknet_markers(html)
                 add_file(web, "index.html", encoded_html)
 
-        # ---------- WhitelistAuthenticatorDaemon ----------
         elif tag == "WhitelistAuthenticatorDaemon":
             wl = ensure_folder("Whitelist")
             if wl.find("file[@name='authenticator.dll']") is None:
@@ -2269,7 +2248,7 @@ class Controller:
 
     def createNewComputer(self):
         if self.xml_root is None:
-            messagebox.showinfo(message="请先打开一个存档！")
+            messagebox.showinfo(message="请先打开一个存档！", parent=self.ui)
             return
 
         win = tk.Toplevel(self.ui)
@@ -2313,10 +2292,8 @@ class Controller:
             if not attrs:
                 daemon_attrs.clear()
                 return
-            win_height = 150 + len(attrs) * 30
             dlg = tk.Toplevel(win)
             dlg.title(f"设置 {sel} 属性")
-            # dlg.geometry(f"300x{win_height}")
             dlg.resizable(False, False)
             dlg.grab_set()
             entries = {}
@@ -2369,7 +2346,7 @@ class Controller:
         admin_pass_var = tk.StringVar(value=''.join(random.choices(string.ascii_letters + string.digits, k=8)))
         tk.Entry(win, textvariable=admin_pass_var, width=20).grid(row=6, column=1, sticky="w", padx=5, pady=2)
 
-        # 系统主题（仅使用已验证的数据）
+        # 系统主题
         tk.Label(win, text="系统主题:").grid(row=7, column=0, sticky="e", padx=5, pady=2)
         theme_var = tk.StringVar(value=DEFAULT_THEME)
         theme_combo = tk.ttk.Combobox(win, textvariable=theme_var,
@@ -2402,16 +2379,15 @@ class Controller:
         tk.Button(sec_frame, text="高级设置",
                   command=lambda: self._open_advanced_settings(win, adv_result)).pack(side=tk.LEFT, padx=(2, 0))
 
-        # 生成按钮
         def do_generate():
             ip = ip_var.get().strip()
             name = name_var.get().strip()
             if not name:
-                messagebox.showwarning("错误", "节点名称不能为空")
+                messagebox.showwarning("错误", "节点名称不能为空", parent=win)
                 return
             existing_ips = {comp.get('ip') for comp in self.xml_root.findall('.//computer')}
             if ip in existing_ips:
-                messagebox.showwarning("错误", f"IP {ip} 已被使用")
+                messagebox.showwarning("错误", f"IP {ip} 已被使用", parent=win)
                 return
             try:
                 x = float(loc_x_var.get())
@@ -2419,33 +2395,33 @@ class Controller:
                 if not (0 <= x <= 1 and 0 <= y <= 1):
                     raise ValueError
             except:
-                messagebox.showwarning("错误", "坐标必须在0~1之间")
+                messagebox.showwarning("错误", "坐标必须在0~1之间", parent=win)
                 return
             admin_pass = admin_pass_var.get().strip()
             if not admin_pass:
                 admin_pass = ''.join(random.choices(string.ascii_letters + string.digits, k=8))
             if not adv_result["ports"]:
-                messagebox.showwarning("错误", "至少需要选择一个开放端口")
+                messagebox.showwarning("错误", "至少需要选择一个开放端口", parent=win)
                 return
             try:
                 int(adv_result["portsToCrack"])
             except:
-                messagebox.showwarning("错误", "骇入需要端口数必须为数字")
+                messagebox.showwarning("错误", "骇入需要端口数必须为数字", parent=win)
                 return
             if adv_result["firewall_enabled"] and not adv_result["firewall_pass"].strip():
-                messagebox.showwarning("错误", "防火墙密码不能为空")
+                messagebox.showwarning("错误", "防火墙密码不能为空", parent=win)
                 return
             try:
                 if adv_result["traceTime"]:
                     float(adv_result["traceTime"])
             except:
-                messagebox.showwarning("错误", "追踪时间必须为数字")
+                messagebox.showwarning("错误", "追踪时间必须为数字", parent=win)
                 return
             try:
                 if adv_result["proxyTime"]:
                     float(adv_result["proxyTime"])
             except:
-                messagebox.showwarning("错误", "代理时间必须为数字")
+                messagebox.showwarning("错误", "代理时间必须为数字", parent=win)
                 return
 
             comp = self._build_computer_element(
@@ -2465,7 +2441,7 @@ class Controller:
             self.computer_num += 1
             self.showComputer()
             win.destroy()
-            messagebox.showinfo("成功", f"节点 {name} 创建成功。\n请手动保存存档。")
+            messagebox.showinfo("成功", f"节点 {name} 创建成功。\n请手动保存存档。", parent=win)
 
         btn_frame = tk.Frame(win)
         btn_frame.grid(row=9, column=0, columnspan=5, pady=15)
@@ -2578,15 +2554,14 @@ class Controller:
                 "proxyTime": "-1"
             }
 
-        # 构建属性字典：基础属性 + id（仅当非空）+ 自定义标记
         comp_attrs = {
             'name': name,
             'ip': ip,
             'type': str(comp_type),
             'spec': 'none',
-            'editor': 'true'          # 自定义节点标记，游戏忽略
+            'editor': 'true'
         }
-        if id_name:                    # 只有非空时才添加 id 属性
+        if id_name:
             comp_attrs['id'] = id_name
 
         comp = ET.Element('computer', comp_attrs)
@@ -2622,7 +2597,6 @@ class Controller:
         ET.SubElement(users, 'user', {'known': 'True', 'name': 'admin', 'pass': admin_pass, 'type': '1'}).tail = '\n'
         users.tail = '\n'
 
-        # 守护进程标签（必需，否则卡死）
         daemons_elem = ET.SubElement(comp, 'daemons')
         if daemon_key != "无":
             daemons_elem.text = '\n'
@@ -2636,7 +2610,6 @@ class Controller:
             daemons_elem.text = '\n'
         daemons_elem.tail = '\n'
 
-        # 文件系统
         fs_elem = ET.SubElement(comp, 'filesystem')
         fs_elem.text = '\n'
         fs_elem.tail = '\n'
