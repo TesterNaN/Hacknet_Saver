@@ -686,6 +686,56 @@ class Controller:
                 break
         return first_header, first_ip, final_suffix, final_content, passcodes
 
+    # ---------- 多层加解密元数据保存与恢复 ----------
+    def decrypt_all_layers_with_metadata(self, data: str):
+        """返回最终明文和每层元数据（从外到内），方便重新加密"""
+        current = data
+        layers = []  # 从外到内
+        while True:
+            lines = [line for line in re.split(r'\r?\n', current) if line.strip() != '']
+            if len(lines) < 2:
+                break
+            head_line = lines[0]
+            body_line = lines[1]
+            parts = head_line.split('::')
+            if len(parts) < 4:
+                break
+            encrypted_encoded = parts[3]
+            pc = brute_force_passcode(encrypted_encoded, body_line)
+            if pc is None:
+                raise ValueError("无法爆破 passcode")
+            hdr, ip, suf, content = decrypt_layer(current, pc)
+            layers.append({
+                'header': hdr,
+                'ip': ip,
+                'suffix': suf,
+                'passcode': pc
+            })
+            if '#DEC_ENC' in content:
+                current = content
+            else:
+                final_content = content
+                break
+        return final_content, layers
+
+    def encrypt_dec_multilayer(self, content: str, layers: list) -> str:
+        """根据 layers 从内到外加密，layers 顺序为从外到内"""
+        result = content
+        # 从最内层开始向外加密
+        for layer in reversed(layers):
+            hdr = layer['header']
+            ip = layer['ip']
+            suf = layer.get('suffix', '.txt')
+            pc = layer['passcode']
+            enc_hdr = self.encrypt_string(hdr, EMPTY_PASSCODE)
+            enc_ip = self.encrypt_string(ip, EMPTY_PASSCODE)
+            enc_encoded = self.encrypt_string("ENCODED", pc)
+            enc_suffix = self.encrypt_string(suf, EMPTY_PASSCODE)
+            enc_content = self.encrypt_string(result, pc)
+            dec_line = f"#DEC_ENC::{enc_hdr}::{enc_ip}::{enc_encoded}::{enc_suffix}"
+            result = dec_line + "\r\n" + enc_content
+        return result
+
     def brute_force_password(self, target_passcode, max_length=6):
         """随机尝试字母数字组合，返回一个 hash 低 16 位等于 target_passcode 的密码"""
         chars = string.ascii_letters + string.digits
@@ -1022,6 +1072,7 @@ class Controller:
         temp_computer_elem = self._deep_copy_element(computer)
         self.clipboard = None
         current_editing_path = None
+        current_dec_layers = None   # 存储当前编辑的 .dec 文件的层信息
 
         def check_modified():
             return ET.tostring(temp_computer_elem, encoding='unicode') != ET.tostring(original_computer_elem, encoding='unicode')
@@ -1104,13 +1155,27 @@ class Controller:
         text.config(yscrollcommand=sbr.set)
 
         def on_edit(event):
+            nonlocal current_dec_layers
             if current_editing_path is None:
                 return
             elem = self._find_fs_element_by_path(temp_computer_elem, current_editing_path)
             if elem is not None and elem.tag == 'file':
                 new_content = text.get("1.0", END).rstrip('\n')
+                fname = elem.get('name', '')
+
+                # 如果是 .dec 文件且有解密层信息，则重新多层加密
+                if fname.lower().endswith('.dec') and current_dec_layers:
+                    try:
+                        re_encrypted = self.encrypt_dec_multilayer(new_content, current_dec_layers)
+                        elem.text = re_encrypted if re_encrypted else None
+                        update_save_menu()
+                        return
+                    except:
+                        pass
+
+                # 普通文件：Hacknet 标记编码
                 encoded_content = self.encode_hacknet_markers(new_content)
-                elem.text = '\n' + encoded_content if encoded_content else None
+                elem.text = encoded_content if encoded_content else None
                 update_save_menu()
         text.bind("<KeyRelease>", on_edit)
 
@@ -1201,7 +1266,7 @@ class Controller:
             update_address()
 
         def on_dir_select(event):
-            nonlocal current_editing_path
+            nonlocal current_editing_path, current_dec_layers
             sel = dir_tree.selection()
             if not sel: return
             item_data = dir_tree.item(sel[0])
@@ -1230,22 +1295,27 @@ class Controller:
             fname = elem.get('name')
             if fname.lower().endswith('.dec') and content.startswith('#DEC_ENC::'):
                 try:
-                    _, _, _, final, _ = decrypt_all_layers(content)
-                    content = final
-                except: pass
-            elif fname.lower().endswith('.mem'):
-                if content.startswith('MEMORY_DUMP : FORMAT v1.22 ----------'):
-                    mem_content = self.decrypt_memory_dump(content)
-                    if mem_content is not None:
-                        content = self.decode_hacknet_markers(mem_content)
-                else:
-                    idx = content.find('#DEC_ENC::')
-                    if idx != -1:
-                        enc_part = content[idx:]
-                        try:
-                            _, _, _, final, _ = decrypt_all_layers(enc_part)
-                            content = final
-                        except: pass
+                    # 使用带元数据的新方法，保存层信息
+                    final_content, layers = self.decrypt_all_layers_with_metadata(content)
+                    current_dec_layers = layers
+                    content = final_content
+                except:
+                    current_dec_layers = None
+            else:
+                current_dec_layers = None
+                if fname.lower().endswith('.mem'):
+                    if content.startswith('MEMORY_DUMP : FORMAT v1.22 ----------'):
+                        mem_content = self.decrypt_memory_dump(content)
+                        if mem_content is not None:
+                            content = self.decode_hacknet_markers(mem_content)
+                    else:
+                        idx = content.find('#DEC_ENC::')
+                        if idx != -1:
+                            enc_part = content[idx:]
+                            try:
+                                _, _, _, final, _ = decrypt_all_layers(enc_part)
+                                content = final
+                            except: pass
             content = self.decode_hacknet_markers(content)
             text.config(state=NORMAL)
             text.delete(1.0, END)
